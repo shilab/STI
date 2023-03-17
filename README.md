@@ -45,6 +45,7 @@ jupyter-lab
 ## Citation
 If you use our model in any project or publication, please cite our paper [Split-Transformer Impute (STI): Genotype Imputation Using a Transformer-Based Model](https://www.biorxiv.org/content/10.1101/2023.03.05.531190v1.abstract)
 
+```
 @article {Mowlaei2023.03.05.531190,
 	author = {Mowlaei, Mohammad Erfan and Li, Chong and Chen, Junjie and Jamialahmadi, Benyamin and Kumar, Sudhir and Rebbeck, Timothy Richard and Shi, Xinghua},
 	title = {Split-Transformer Impute (STI): Genotype Imputation Using a Transformer-Based Model},
@@ -57,3 +58,4 @@ If you use our model in any project or publication, please cite our paper [Split
 	eprint = {https://www.biorxiv.org/content/early/2023/03/06/2023.03.05.531190.full.pdf},
 	journal = {bioRxiv}
 }
+```
