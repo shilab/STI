@@ -20,6 +20,9 @@ ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf > All genotypes in chromosome 2
 ## Source codes for result analysis
 **notebooks_result_analysis** contains the codes we used to calculate evaluation metrics on the saved results of the experiments. Visualization codes are not included.
 
+## Demo
+In case you want to have a quick demo, we suggest you to use **[TPU] STI Chr.22 ALL.ipynb** notebook in **notebooks_experiment** folder using **ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf** dataset, which is one of the relatively small datasets. The expected outputs are present in the same notebook as well and you can compare them to the outputs you obtain. The training and testing time for each fold in this notebook should take ~15 minutes.
+
 ## Getting Started:
 
 These instructions will get you a copy of the project up and running on your local machine for development and testing purposes.
