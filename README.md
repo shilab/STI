@@ -13,6 +13,10 @@ DELL.chr22.genotypes.for.modeling.vcf > Genotypes for deletions in chromosome 22
 
 ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf > All genotypes in chromosome 22
 
+### Using your data
+
+The model is not bound to a specific file format and as long as your inputs are one-hot encoded, the model should be able to handle them (minor pre-/post-processing might be needed, e.g., diploid > haploids during pre-processing and reverse operations during post-processing)
+
 
 ## Source code for the experiments
 **notebooks\_experiment** contains the code for all of our experiments in jupyter notebooks. The only thing to consider before running them is to replace **[path]** in file paths in each notebook. Excluding _AE_ that only runs of GPU, the rest of models should be runnable on Google Colab TPU/GPU without changes.
