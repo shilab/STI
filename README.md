@@ -6,9 +6,13 @@ Split Transformer Impute source code
 The datasets associated with the paper can be downloaded and processed from the online sources mentioned in the paper. However, we include a copy of the data for more accessibility in **data** directory.
 
 genotype_full.txt > Genotypes for the yeast dataset
+
 HLA.recode.vcf > Genotypes for the HLA dataset
+
 DELL.chr22.genotypes.for.modeling.vcf > Genotypes for deletions in chromosome 22
+
 ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf > All genotypes in chromosome 22
+
 
 ## Source code for the experiments
 **notebooks\_experiment** contains the code for all of our experiments in jupyter notebooks. The only thing to consider before running them is to replace **[path]** in file paths in each notebook. Excluding _AE_ that only runs of GPU, the rest of models should be runnable on Google Colab TPU/GPU without changes.
