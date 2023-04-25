@@ -28,7 +28,7 @@ Create virtual environment
 
 Install requirment dependents
 ```
-pip3 install scipy sklearn pandas tensorflow-gpu==2.11 jupyterlab matplotlib seaborn scikit-allel
+pip3 install scipy==1.7.3 sklearn==1.0.1 pandas==1.3.4 tensorflow-gpu==2.11 jupyterlab matplotlib3.5.0 seaborn==0.12.1 scikit-allel==1.3.5
 ```
 
 Then download the project and start jupyter lab to run the codes
