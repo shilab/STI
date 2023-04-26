@@ -2,7 +2,7 @@
 Split Transformer Impute source code
 
 ## Overal workflow of STI in pseudocode
-
+```
 PROGRAM STI:
   Read the data;
   Perform one-hot encoding on the data;
@@ -30,7 +30,7 @@ PROGRAM STI:
   Save the resulting predictions into a file;
   
 END.
-
+```
 ## Data
 
 The datasets associated with the paper can be downloaded and processed from the online sources mentioned in the paper. However, we include a copy of the data for more accessibility in **data** directory.
