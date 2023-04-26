@@ -1,6 +1,36 @@
 # STI
 Split Transformer Impute source code
 
+## Overal workflow of STI in pseudocode
+
+PROGRAM STI:
+  Read the data;
+  Perform one-hot encoding on the data;
+  Partition the data into training, validation, and test sets;
+  IF (data is diploid)
+      THEN break them into haploids but keep the order intact;
+      ELSE do nothing;
+  ENDIF;
+  FOR each iteration
+  	Shuffle haploids in training and validation sets separately;
+  	FOR each training batch
+		Randomly select 50% of the values in the training batch and replace them with missing values;
+  		Train the model using the training batch;
+	ENDFOR;
+	FOR each validation batch
+		Randomly select 50% of the values in the validation batch and replace them with missing values;
+  		Evaluate the model using the validation batch;
+	ENDFOR;
+  ENDFOR;
+  Perform prediction using the model on the test set;
+  IF (data is diploid)
+      THEN replace each two consecutive test samples with the respective diploid
+      ELSE do nothing;
+  ENDIF;
+  Save the resulting predictions into a file;
+  
+END.
+
 ## Data
 
 The datasets associated with the paper can be downloaded and processed from the online sources mentioned in the paper. However, we include a copy of the data for more accessibility in **data** directory.
