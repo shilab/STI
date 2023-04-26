@@ -1,10 +1,10 @@
 # STI
 Split Transformer Impute source code
 
-### Model architecture
+## Model architecture
 
 <p align="center">
-  <img width="460" height="auto" src="https://github.com/shilab/STI/blob/main/architecture.pdf">
+  <img width="460" height="auto" src="https://github.com/shilab/STI/blob/main/architecture.png">
 </p>
 
 ## Overal workflow of STI in pseudocode
