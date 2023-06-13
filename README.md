@@ -85,7 +85,7 @@ pip3 install scipy==1.7.3 sklearn==1.0.1 pandas==1.3.4 tensorflow-gpu==2.11 jupy
 
 Then download the project and start jupyter lab to run the codes
 ```
-git clone https://github.com/ErfanMowlaei/STI.git
+git clone https://github.com/shilab/STI.git
 cd STI-main
 mkdir venv
 python3 -m venv venv/
