@@ -115,7 +115,9 @@ jupyter-lab
 
 ## Contact
 You can reach out to us regarding your questions , suggestions, and possible collaboration using either of these emails:
+
 M. Erfan Mowlaei: tul67492[at]temple[dot]edu or erfan[dot]molaei[at]gmail[dot]com
+
 Prof. Xinghua Shi: mindyshi[at]temple[dot]edu
 
 ## Citation
