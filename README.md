@@ -45,9 +45,20 @@ genotype_full.txt > Genotypes for the yeast dataset
 
 HLA.recode.vcf > Genotypes for the HLA dataset
 
-DELL.chr22.genotypes.for.modeling.vcf > Genotypes for deletions in chromosome 22
+DELL.chr22.genotypes.full.vcf > Genotypes for deletions in chromosome 22
 
 ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf > All genotypes in chromosome 22
+
+beadchip_reference_all_minaf_05_snps_hwe_1e-2_filtered_train.vcf.gz > The training dataset for missing variant experiment using SNPs on chromosome 22 
+test_data_beadchip_hwe_filtered.vcf.gz > The test dataset for missing variant experiment using SNPs on chromosome 22. This file contains Omni2.5 microarray genotypes
+test_true_data_beadchip_hwe_filtered.vcf.gz > The ground truth for the missing variants in Omni2.5 microarray dataset.
+
+### Instruction on how to obtain the dataset for the Missing variants experiment (Imputing microarray data using WGS data)
+1. Follow the instructions in the following link to obtain the dataset (VCF + Omni BeadChip manifest + Hg19 fast file): https://github.com/kanamekojima/rnnimp
+2. [optional] Filter the data using bcftools and/or plink. Sample commands are in `command_used_for_beadchip_ref_filtering.txt` file.
+3. Split the data to train and test. Sample test ids we used for our experiment can be found in `test_samples.txt` inside `STI_benchmark_datasets.zip`
+Please note that variant IDs should be unique for the code to work correctly.
+
 
 ### Using your data
 
@@ -55,13 +66,17 @@ The model is not bound to a specific file format and as long as your inputs are 
 
 
 ## Source code for the experiments
-**notebooks\_experiment** contains the code for all of our experiments in jupyter notebooks. The only thing to consider before running them is to replace **[path]** in file paths in each notebook. Excluding _AE_ that only runs of GPU, the rest of models should be runnable on Google Colab TPU/GPU without changes.
+**notebooks\_experiment** contains the code for all of our experiments in jupyter notebooks. The only thing to consider before running them is to replace **[path] | [data_path] | [save_path]** in file paths in each notebook. Excluding _AE_ that only runs of GPU, the rest of models should be runnable on Google Colab TPU/GPU without changes.
 
-## Source codes for result analysis
+## Source codes for result analysis [old]
 **notebooks_result_analysis** contains the codes we used to calculate evaluation metrics on the saved results of the experiments. Visualization codes are not included.
 
 ## Demo
+### Sporadic missing imputation
 In case you want to have a quick demo, we suggest you to use **[TPU] STI Chr.22 ALL.ipynb** notebook in **notebooks_experiment** folder using **ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf** dataset, which is one of the relatively small datasets. The expected outputs are present in the same notebook as well and you can compare them to the outputs you obtain. The training and testing time for each fold in this notebook should take ~15 minutes if you are using TPU on google colab.
+
+### Missing variants imputation
+**[TPU][Beadchip] STI HMR WGS+Microarray.ipynb** contains the code we used to train the model and impute the test set for this experiment. The output of the previous notebook is numpy arrays. You need to use **[TPU][Beadchip] Ligate.ipynb** in order to convert them to a vcf file.
 
 ## Getting Started:
 
@@ -80,7 +95,7 @@ Create virtual environment
 
 Install requirment dependents
 ```
-pip3 install scipy==1.7.3 sklearn==1.0.1 pandas==1.3.4 tensorflow-gpu==2.11 jupyterlab matplotlib3.5.0 seaborn==0.12.1 scikit-allel==1.3.5
+pip3 install scipy==1.7.3 sklearn==1.0.1 pandas==1.3.4 tensorflow>=2.11 jupyterlab matplotlib3.5.0 seaborn==0.12.1 scikit-allel==1.3.5
 ```
 
 Then download the project and start jupyter lab to run the codes
@@ -93,6 +108,17 @@ source venv/bin/activate
 jupyter-lab
 ```
 
+## Roadmap
+- Add a single script to handle haploids/diploids
+- Add GPU(and HPC) support
+- Unify the scripts for sporadic missingness imputation and variant imputation
+
+## Contact
+You can reach out to us regarding your questions , suggestions, and possible collaboration using either of these emails:
+
+M. Erfan Mowlaei: tul67492[at]temple[dot]edu or erfan[dot]molaei[at]gmail[dot]com
+
+Prof. Xinghua Shi: mindyshi[at]temple[dot]edu
 
 ## Citation
 If you use our model in any project or publication, please cite our paper [Split-Transformer Impute (STI): Genotype Imputation Using a Transformer-Based Model](https://www.biorxiv.org/content/10.1101/2023.03.05.531190v1.abstract)
