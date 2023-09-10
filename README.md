@@ -57,6 +57,8 @@ test_true_data_beadchip_hwe_filtered.vcf.gz > The ground truth for the missing v
 1. Follow the instructions in the following link to obtain the dataset (VCF + Omni BeadChip manifest + Hg19 fast file): https://github.com/kanamekojima/rnnimp
 2. [optional] Filter the data using bcftools and/or plink. Sample commands are in `command_used_for_beadchip_ref_filtering.txt` file.
 3. Split the data to train and test. Sample test ids we used for our experiment can be found in `test_samples.txt` inside `STI_benchmark_datasets.zip`
+4. Use the code provided (scripts/test_data_preparation.py) in https://github.com/kanamekojima/rnnimp to generate the test set (microarray data).
+5. Use `hapslegend2vcf.py` to convert the output of the last step to vcf format. This code is provided by Dr Kaname Kojima under MIT license.
 Please note that variant IDs should be unique for the code to work correctly.
 
 
