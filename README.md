@@ -45,9 +45,18 @@ genotype_full.txt > Genotypes for the yeast dataset
 
 HLA.recode.vcf > Genotypes for the HLA dataset
 
-DELL.chr22.genotypes.for.modeling.vcf > Genotypes for deletions in chromosome 22
+DELL.chr22.genotypes.full.vcf > Genotypes for deletions in chromosome 22
 
 ALL.chr22.mergedSV.v8.20130502.svs.genotypes.vcf > All genotypes in chromosome 22
+
+beadchip_reference_all_minaf_05_snps_hwe_1e-2_filtered_train.vcf.gz > The training dataset for missing variant experiment using SNPs on chromosome 22 
+test_data_beadchip_hwe_filtered.vcf.gz > The test dataset for missing variant experiment using SNPs on chromosome 22. This file contains Omni2.5 microarray genotypes
+test_true_data_beadchip_hwe_filtered.vcf.gz > The ground truth for the missing variants in Omni2.5 microarray dataset.
+
+### Instruction on how to obtain the dataset for the Missing variants experiment (Imputing microarray data using WGS data)
+1. Follow the instructions in the following link to obtain the dataset (VCF + Omni BeadChip manifest + Hg19 fast file): https://github.com/kanamekojima/rnnimp
+2. [optional] Filter the data using plink 2 or vcf tools
+
 
 ### Using your data
 
