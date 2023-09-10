@@ -1,0 +1,8 @@
+#bcftools 1.17
+#Using htslib 1.17
+#Copyright (C) 2023 Genome Research Ltd.
+#License Expat: The MIT/Expat license
+
+bcftools norm -m -any ALL.chr22.phase3_shapeit2_mvncall_integrated_v5a.20130502.genotypes.vcf.gz -Ou --threads 4 | bcftools view -m 2 -M 2 -v snps -S ^test_samples.txt -q 0.05:minor -Ou --threads 4 | bcftools annotate --set-id +'%CHROM\:%POS\:%REF\:%ALT' -Ou --threads 4 | bcftools filter -i 'QUAL>=95' --threads 4 -o beadchip_reference_test_samples_excluded.vcf
+
+Also plink hwe 1e-2
