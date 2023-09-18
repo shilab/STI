@@ -1,4 +1,4 @@
-import os, sys, math, re, random, shutil, gzip
+import os, sys, math, re, random, shutil, gzip, argparse
 from tqdm import tqdm
 import numpy as np
 from typing import Union
@@ -409,7 +409,58 @@ class DataReader:
         df.to_csv(file_name, sep=self.ref_separator, mode='a', index=False)
 
 def main(args):
-    pass
+    '''
+    target_is_gonna_be_phased_or_haps:bool,
+    variants_as_columns:bool=False,
+    delimiter=None,
+    file_format="infer",
+    first_column_is_index=True,
+    comments="##"
+    '''
+    parser = argparse.ArgumentParser(description='ShiLab\'s Imputation model (STI v1.1).')
+
+    ## Function mode
+    parser.add_argument('-fm', type=str, help='Operation mode: impute | train (default=train)',
+                        choices=['impute', 'train'], default='train')
+    ## Input args
+    parser.add_argument('-ref', type=str, required=True, help='Reference file path')
+    parser.add_argument('-target', type=str, required=False, help='[optional] Target file path')
+    parser.add_argument('-tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
+    parser.add_argument('-ref-sep', type=str, required=False, help='The separator used in the reference input file (If -ref-file-format is infer, this argument will be inferred as well).')
+    parser.add_argument('-target-sep', type=str, required=False, help='The separator used in the target input file (If -target-file-format is infer, this argument will be inferred as well).')
+    parser.add_argument('-ref-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the reference file (default: False).', default=False)
+    parser.add_argument('-target-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the target file (default: False).', default=False)
+    parser.add_argument('-ref-fcai', type=bool, required=False, help='[Used for non-vcf formats] Whether the first column in the reference file is (samples | variants) index (default: False).', default=False)
+    parser.add_argument('-target-fcai', type=bool, required=False, help='[Used for non-vcf formats] Whether the first column in the target file is (samples | variants) index (default: False).', default=False)
+    parser.add_argument('-ref-file-format', type=str, required=False,
+                        help='Reference file format: infer | vcf | csv | tsv. Default is infer.',
+                        default="infer",
+                        choices=['infer', 'vcf', 'csv', 'tsv'])
+    parser.add_argument('-target-file-format', type=str, required=False,
+                        help='Target file format: infer | vcf | csv | tsv. Default is infer.',
+                        default="infer",
+                        choices=['infer', 'vcf', 'csv', 'tsv'])
+
+    ## path args
+    parser.add_argument('-save_dir', type=str, required=True, help='the path to save the results and the model.\n'
+                                                                   'This path is also used to load a trained model for imputation.')
+
+
+    ## Chunking args
+    parser.add_argument('-wo', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)', default=100)
+    parser.add_argument('-cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)', default=2000)
+    parser.add_argument('-sites-per-model', type=int, required=False, help='Number of SNPs/SVs used per model(default 30000)', default=30000)
+
+    ## Model hyper-params
+    parser.add_argument('-na-heads', type=int, required=False, help='Number of attention heads(default 16)', default=16)
+    parser.add_argument('-embed-dim', type=int, required=False, help='Embedding dimension size(default 128)', default=128)
+    parser.add_argument('-lr', type=float, required=False, help='Learning Rate (default 0.001)', default=0.001)
+    parser.add_argument('-batch-size-per-gpu', type=int, required=False, help='Batch size per gpu(default 4)', default=4)
+
+
+    args = parser.parse_args()
+
+    phenoIndex = args.pi
 
 if __name__ == '__main__':
-    main(sys.argv[1:])
+    main()
