@@ -54,17 +54,17 @@ class DataReader:
         self.target_n_header_lines = []
         self.target_n_data_header = ""
         self.ref_separator = None
-        self.map_values_1_vec = np.vectorize(self.map_hap_2_ind_parent_1)
-        self.map_values_2_vec = np.vectorize(self.map_hap_2_ind_parent_2)
-        self.map_haps_to_vec = np.vectorize(self.map_haps_2_ind)
+        self.map_values_1_vec = np.vectorize(self.__map_hap_2_ind_parent_1)
+        self.map_values_2_vec = np.vectorize(self.__map_hap_2_ind_parent_2)
+        self.map_haps_to_vec = np.vectorize(self.__map_haps_2_ind)
         self.delimiter_dictionary = {"vcf": "\t", "csv": ",", "tsv": "\t", "infer": "\t"}
         self.ref_file_extension = "vcf"
         self.test_file_extension = "vcf"
         self.target_is_phased = True
         ## Idea: keep track of possible alleles in each variant, and filter the predictions based on that
 
-    def read_csv(self, file_path, is_vcf=False, is_reference=False, separator="\t", first_column_is_index=True,
-                 comments="##") -> pd.DataFrame:
+    def __read_csv(self, file_path, is_vcf=False, is_reference=False, separator="\t", first_column_is_index=True,
+                   comments="##") -> pd.DataFrame:
         """
         In this form the data should not have more than a column for ids. The first column can be either sample ids or variant ids. In case of latter, make sure to pass :param variants_as_columns=True. Example of sample input file:
         ## Comment line 0
@@ -100,7 +100,7 @@ class DataReader:
         # df = df.astype('category')
         return df
 
-    def find_file_extension(self, file_path, file_format, delimiter):
+    def __find_file_extension(self, file_path, file_format, delimiter):
         # Default assumption
         separator = "\t"
         found_file_format = "vcf"
@@ -138,13 +138,13 @@ class DataReader:
         :return: None
         """
         self.target_is_gonna_be_phased = target_is_gonna_be_phased_or_haps
-        self.ref_file_extension, self.ref_separator = self.find_file_extension(file_path, file_format, delimiter)
+        self.ref_file_extension, self.ref_separator = self.__find_file_extension(file_path, file_format, delimiter)
         if file_format == "infer":
             print(f"Ref file format is {self.ref_file_extension} and Ref file sep is {self.ref_separator}.")
 
-        self.reference_panel = self.read_csv(file_path, is_reference=True, is_vcf=False, separator=self.ref_separator,
-                                             first_column_is_index=first_column_is_index,
-                                             comments=comments) if self.ref_file_extension != 'vcf' else self.read_csv(
+        self.reference_panel = self.__read_csv(file_path, is_reference=True, is_vcf=False, separator=self.ref_separator,
+                                               first_column_is_index=first_column_is_index,
+                                               comments=comments) if self.ref_file_extension != 'vcf' else self.__read_csv(
             file_path, is_reference=True, is_vcf=True, separator='\t', first_column_is_index=False, comments="##")
 
         if self.ref_file_extension != "vcf":
@@ -232,16 +232,16 @@ class DataReader:
         if self.reference_panel is None:
             raise RuntimeError("First you need to use 'DataReader.assign_training_set(...) to assign a training set.' ")
 
-        self.target_file_extension, separator = self.find_file_extension(file_path, file_format, delimiter)
+        self.target_file_extension, separator = self.__find_file_extension(file_path, file_format, delimiter)
 
-        test_df = self.read_csv(file_path, is_reference=False, is_vcf=False, separator=separator,
-                                first_column_is_index=first_column_is_index,
-                                comments=comments) if self.ref_file_extension != 'vcf' else self.read_csv(file_path,
-                                                                                                          is_reference=False,
-                                                                                                          is_vcf=True,
-                                                                                                          separator='\t',
-                                                                                                          first_column_is_index=False,
-                                                                                                          comments="##")
+        test_df = self.__read_csv(file_path, is_reference=False, is_vcf=False, separator=separator,
+                                  first_column_is_index=first_column_is_index,
+                                  comments=comments) if self.ref_file_extension != 'vcf' else self.__read_csv(file_path,
+                                                                                                              is_reference=False,
+                                                                                                              is_vcf=True,
+                                                                                                              separator='\t',
+                                                                                                              first_column_is_index=False,
+                                                                                                              comments="##")
 
         if self.target_file_extension != "vcf":
             if variants_as_columns:
@@ -270,13 +270,13 @@ class DataReader:
         self.target_set = self.target_set.astype('category')
         print("Done!")
 
-    def map_hap_2_ind_parent_1(self, x) -> int:
+    def __map_hap_2_ind_parent_1(self, x) -> int:
         return self.hap_map[x.split('|')[0]]
 
-    def map_hap_2_ind_parent_2(self, x) -> int:
+    def __map_hap_2_ind_parent_2(self, x) -> int:
         return self.hap_map[x.split('|')[1]]
 
-    def map_haps_2_ind(self, x) -> int:
+    def __map_haps_2_ind(self, x) -> int:
         return self.hap_map[x]
 
     def __diploids_to_hap_vecs(self, data: pd.DataFrame) -> np.ndarray:
@@ -312,7 +312,7 @@ class DataReader:
             print("No variant indices provided or indices not valid, using the whole sequence...")
             return self.__get_forward_data(data=self.target_set.iloc[:, self.target_sample_value_index - 1:])
 
-    def convert_genotypes_to_vcf(self, genotypes, pred_format="GT:DS:GP"):
+    def __convert_genotypes_to_vcf(self, genotypes, pred_format="GT:DS:GP"):
         n_samples, n_variants = genotypes.shape
         new_vcf = self.target_set.copy()
         new_vcf.iloc[:n_variants, 9:] = genotypes.T
@@ -322,7 +322,7 @@ class DataReader:
         new_vcf["INFO"] = "IMPUTED"
         return new_vcf
 
-    def convert_hap_probs_to_diploid_genotypes(self, allele_probs) -> np.ndarray:
+    def __convert_hap_probs_to_diploid_genotypes(self, allele_probs) -> np.ndarray:
         n_haploids, n_variants, n_alleles = allele_probs.shape
         allele_probs_normalized = softmax(allele_probs, axis=-1)
 
@@ -346,11 +346,11 @@ class DataReader:
 
         return genotypes
 
-    def convert_hap_probs_to_hap_genotypes(self, allele_probs) -> np.ndarray:
+    def __convert_hap_probs_to_hap_genotypes(self, allele_probs) -> np.ndarray:
         allele_probs_normalized = softmax(allele_probs, axis=-1)
         return np.argmax(allele_probs_normalized, axis=1).astype(str)
 
-    def convert_unphased_probs_to_genotypes(self, allele_probs) -> np.ndarray:
+    def __convert_unphased_probs_to_genotypes(self, allele_probs) -> np.ndarray:
         n_samples, n_variants, n_alleles = allele_probs.shape
         allele_probs_normalized = softmax(allele_probs, axis=-1)
         genotypes = np.zeros((n_samples, n_variants), dtype=object)
@@ -377,7 +377,7 @@ class DataReader:
 
     def preds_to_genotypes(self, predictions: Union[str, np.ndarray]) -> pd.DataFrame:
         """
-        :param predictions: The path to numpy array stored on disk or numpy array of (n_samples, n_variants, n_alleles)
+        :param predictions: The path to numpy array stored on disk or numpy array of shape (n_samples, n_variants, n_alleles)
         :return: numpy array of the same shape, with genotype calls, e.g., "0/1"
         """
         if isinstance(predictions, str):
@@ -388,14 +388,14 @@ class DataReader:
         target_df = self.target_set.copy()
         if not self.is_phased:
             target_df[
-                target_df.columns[self.target_sample_value_index - 1:]] = self.convert_unphased_probs_to_genotypes(
+                target_df.columns[self.target_sample_value_index - 1:]] = self.__convert_unphased_probs_to_genotypes(
                 preds).T
         elif self.target_is_hap:
-            target_df[target_df.columns[self.target_sample_value_index - 1:]] = self.convert_hap_probs_to_hap_genotypes(
+            target_df[target_df.columns[self.target_sample_value_index - 1:]] = self.__convert_hap_probs_to_hap_genotypes(
                 preds).T
         else:
             target_df[
-                target_df.columns[self.target_sample_value_index - 1:]] = self.convert_hap_probs_to_diploid_genotypes(
+                target_df.columns[self.target_sample_value_index - 1:]] = self.__convert_hap_probs_to_diploid_genotypes(
                 preds).T
         return target_df
 
@@ -407,6 +407,15 @@ class DataReader:
             else:  # Not the best idea?
                 f_out.write("\n".join(self.ref_n_header_lines))
         df.to_csv(file_name, sep=self.ref_separator, mode='a', index=False)
+
+
+def train_the_model(args):
+    pass
+
+
+def impute_the_target(args):
+    pass
+
 
 def main(args):
     '''
@@ -420,7 +429,7 @@ def main(args):
     parser = argparse.ArgumentParser(description='ShiLab\'s Imputation model (STI v1.1).')
 
     ## Function mode
-    parser.add_argument('-fm', type=str, help='Operation mode: impute | train (default=train)',
+    parser.add_argument('-mode', type=str, help='Operation mode: impute | train (default=train)',
                         choices=['impute', 'train'], default='train')
     ## Input args
     parser.add_argument('-ref', type=str, required=True, help='Reference file path')
@@ -463,8 +472,10 @@ def main(args):
 
 
     args = parser.parse_args()
-
-    phenoIndex = args.pi
+    if args.mode == 'train':
+        train_the_model(args)
+    else:
+        impute_the_target(args)
 
 if __name__ == '__main__':
     main()
