@@ -890,10 +890,12 @@ def train_the_model(args) -> None:
 
     x_train_indices, x_valid_indices = train_test_split(range(dr.get_ref_set(0, 1).shape[0]),
                                                       test_size=args.val_frac,
-                                                      random_state=2022,
+                                                      random_state=args.random_seed,
                                                       shuffle=True,)
     steps_per_epoch = len(x_train_indices) // BATCH_SIZE
     validation_steps = len(x_valid_indices) // BATCH_SIZE
+
+    break_points = list(np.arange(0, dr.VARIANT_COUNT, args.sites_per_model)) + [dr.VARIANT_COUNT]
 
     model_args = {
         "embedding_dim": args.embed_dim,
@@ -980,16 +982,17 @@ def main(args):
 
 
     ## Chunking args
-    parser.add_argument('-wo', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)', default=100)
+    parser.add_argument('-co', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)', default=100)
     parser.add_argument('-cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)', default=2000)
     parser.add_argument('-sites-per-model', type=int, required=False, help='Number of SNPs/SVs used per model(default 30000)', default=30000)
 
     ## Model (hyper-)params
     parser.add_argument('-mr', type=float, required=False, help='Masking rate(default 0.8)', default=0.8)
     parser.add_argument('-val-frac', type=float, required=False, help='Fraction of reference samples to be used for validation (default=0.1).', default=0.1)
-    parser.add_argument('-epochs', type=int, required=False, help='Maximum number of epochs(default 1000)', default=1000)
-    parser.add_argument('-na-heads', type=int, required=False, help='Number of attention heads(default 16)', default=16)
-    parser.add_argument('-embed-dim', type=int, required=False, help='Embedding dimension size(default 128)', default=128)
+    parser.add_argument('-random-seed', type=int, required=False, help='Random seed used for splitting the data into training and validation sets (default 2022).', default=2022)
+    parser.add_argument('-epochs', type=int, required=False, help='Maximum number of epochs (default 1000)', default=1000)
+    parser.add_argument('-na-heads', type=int, required=False, help='Number of attention heads (default 16)', default=16)
+    parser.add_argument('-embed-dim', type=int, required=False, help='Embedding dimension size (default 128)', default=128)
     parser.add_argument('-lr', type=float, required=False, help='Learning Rate (default 0.001)', default=0.001)
     parser.add_argument('-batch-size-per-gpu', type=int, required=False, help='Batch size per gpu(default 4)', default=4)
 
