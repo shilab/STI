@@ -26,6 +26,404 @@ strategy = tf.distribute.MirroredStrategy()
 N_REPLICAS = strategy.num_replicas_in_sync
 print(f"Num gpus to be used: {N_REPLICAS}")
 
+## Custom Layers
+class CrossAttentionLayer(layers.Layer):
+  def __init__(self, local_dim, global_dim,
+               start_offset=0, end_offset=0,
+               activation=tf.nn.gelu, dropout_rate=0.1,
+               n_heads=8):
+    super(CrossAttentionLayer, self).__init__()
+    self.local_dim = local_dim
+    self.global_dim = global_dim
+    self.dropout_rate = dropout_rate
+    self.activation = activation
+    self.start_offset = start_offset
+    self.end_offset = end_offset
+    self.num_heads = n_heads
+    self.layer_norm00 = layers.LayerNormalization()
+    self.layer_norm01 = layers.LayerNormalization()
+    self.layer_norm1 = layers.LayerNormalization()
+    self.ffn = tf.keras.Sequential(
+          [
+            layers.Dense(self.local_dim//2, activation=self.activation,
+                        ),
+            layers.Dense(self.local_dim,
+                        activation=self.activation,
+                        ), ]
+      )
+    self.add0 = layers.Add()
+    self.add1 = layers.Add()
+    self.attention = layers.MultiHeadAttention(num_heads=self.num_heads,
+                                               key_dim=self.local_dim)
+
+  def call(self, inputs, training):
+    local_repr = self.layer_norm00(inputs[0])
+    global_repr = self.layer_norm01(inputs[1])
+    query = local_repr[:, self.start_offset:local_repr.shape[1]-self.end_offset, :]
+    key = global_repr
+    value = global_repr
+
+    # Generate cross-attention outputs: [batch_size, latent_dim, projection_dim].
+    attention_output = self.attention(
+        query, key, value
+    )
+    # Skip connection 1.
+    attention_output = self.add0([attention_output, query])
+
+    # Apply layer norm.
+    attention_output = self.layer_norm1(attention_output)
+    # Apply Feedforward network.
+    outputs = self.ffn(attention_output)
+    # Skip connection 2.
+    outputs = self.add1([outputs, attention_output])
+    return outputs
+
+class MaskedTransformerBlock(layers.Layer):
+  def __init__(self, embed_dim, num_heads, ff_dim, attention_range, start_offset=0, end_offset=0, attn_block_repeats=1, activation=tf.nn.gelu, dropout_rate=0.1, use_ffn=True):
+    super(MaskedTransformerBlock, self).__init__()
+    self.embed_dim = embed_dim
+    self.num_heads = num_heads
+    self.ff_dim = ff_dim
+    self.start_offset = start_offset
+    self.end_offset = end_offset
+    self.attention_range = attention_range
+    self.attn_block_repeats = attn_block_repeats
+    self.activation = activation
+    self.dropout_rate = dropout_rate
+    self.use_ffn = use_ffn
+    self.att0 = [layers.MultiHeadAttention(num_heads=self.num_heads,
+                                           key_dim=self.embed_dim) for _ in range(attn_block_repeats)]
+    if self.use_ffn:
+      self.ffn = [tf.keras.Sequential(
+          [
+            layers.Dense(self.ff_dim, activation=self.activation,
+                        ),
+            layers.Dense(self.embed_dim,
+                        activation=self.activation,
+                        ), ]
+      ) for _ in range(attn_block_repeats)]
+    self.layer_norm0 = [layers.LayerNormalization() for _ in range(attn_block_repeats)]
+    self.layer_norm1 = [layers.LayerNormalization() for _ in range(attn_block_repeats)]
+
+  def build(self, input_shape):
+    assert(self.end_offset >= 0)
+    self.feature_size = input_shape[1]
+    attention_mask = np.zeros((self.feature_size,
+                               self.feature_size), dtype=bool)
+    for i in range(self.start_offset, self.feature_size - self.end_offset):
+      attention_indices = np.arange(max(0, i-self.attention_range), min(self.feature_size, i+self.attention_range))
+      attention_mask[i, attention_indices] = True
+    self.attention_mask = tf.constant(attention_mask[self.start_offset:self.feature_size-self.end_offset])
+
+  def call(self, inputs, training):
+
+    x = inputs
+    for i in range(self.attn_block_repeats-1):
+      x = self.layer_norm0[i](x)
+      attn_output = self.att0[i](x, x)
+      out1 = x + attn_output
+      out1 = self.layer_norm1[i](out1)
+      if self.use_ffn:
+        ffn_output = self.ffn[i](out1)
+        x = out1 + ffn_output
+      else:
+        x = out1
+
+    x = self.layer_norm0[-1](inputs)
+    attn_output = self.att0[-1](x[:, self.start_offset:x.shape[1]-self.end_offset, :], x,
+                            )
+    out1 = x[:, self.start_offset:x.shape[1]-self.end_offset, :] + attn_output
+    out1 = self.layer_norm1[-1](out1)
+    if self.use_ffn:
+      ffn_output = self.ffn[-1](out1)
+      x = out1 + ffn_output
+    else:
+      x = out1
+    return x
+
+class GenoEmbeddings(layers.Layer):
+  def __init__(self, embedding_dim,
+               embeddings_initializer='glorot_uniform',
+               embeddings_regularizer=None,
+               activity_regularizer=None,
+               embeddings_constraint=None):
+    super(GenoEmbeddings, self).__init__()
+    self.embedding_dim = embedding_dim
+    self.embeddings_initializer = initializers.get(embeddings_initializer)
+    self.embeddings_regularizer = regularizers.get(embeddings_regularizer)
+    self.activity_regularizer = regularizers.get(activity_regularizer)
+    self.embeddings_constraint = constraints.get(embeddings_constraint)
+
+  def build(self, input_shape):
+    # print(input_shape)
+
+    self.num_of_allels = input_shape[-1]
+    self.n_snps = input_shape[-2]
+    self.position_embedding = layers.Embedding(
+            input_dim=self.n_snps, output_dim=self.embedding_dim
+        )
+    self.embedding = self.add_weight(
+            shape=(self.num_of_allels, self.embedding_dim),
+            initializer=self.embeddings_initializer,
+            trainable=True, name='geno_embeddings',
+            regularizer=self.embeddings_regularizer,
+            constraint=self.embeddings_constraint,
+            experimental_autocast=False
+        )
+    self.positions = tf.range(start=0, limit=self.n_snps, delta=1)
+  def call(self, inputs):
+    self.immediate_result = tf.einsum('ijk,kl->ijl', inputs, self.embedding)
+    return self.immediate_result + self.position_embedding(self.positions)
+
+
+class SelfAttnChunk(layers.Layer):
+  def __init__(self, embed_dim, num_heads, ff_dim, attention_range,
+               start_offset=0, end_offset=0,
+               attn_block_repeats=1,
+               include_embedding_layer=False):
+    super(SelfAttnChunk, self).__init__()
+    self.attention_range = attention_range
+    self.ff_dim = ff_dim
+    self.num_heads = num_heads
+    self.embed_dim = embed_dim
+    self.attn_block_repeats = attn_block_repeats
+    self.include_embedding_layer = include_embedding_layer
+
+    self.attention_block = MaskedTransformerBlock(self.embed_dim,
+                                                   self.num_heads, self.ff_dim,
+                                                   attention_range, start_offset,
+                                                   end_offset, attn_block_repeats=1)
+    if include_embedding_layer:
+      self.embedding = GenoEmbeddings(embed_dim)
+
+
+  def build(self, input_shape):
+    pass
+
+  def call(self, inputs, training):
+    if self.include_embedding_layer:
+      x = self.embedding(inputs)
+    else:
+      x = inputs
+    x = self.attention_block(x)
+    return x
+
+class CrossAttnChunk(layers.Layer):
+  def __init__(self, start_offset=0, end_offset=0, n_heads = 8):
+    super(CrossAttnChunk, self).__init__()
+    self.start_offset = start_offset
+    self.end_offset = end_offset
+    self.n_heads = n_heads
+
+
+  def build(self, input_shape):
+    self.local_dim = input_shape[0][-1]
+    self.global_dim = input_shape[1][-1]
+    self.attention_block = CrossAttentionLayer(self.local_dim, self.global_dim,
+                                              self.start_offset, self.end_offset,
+                                              n_heads=self.n_heads)
+    pass
+
+  def call(self, inputs, training):
+    x = inputs
+    x = self.attention_block(x)
+    return x
+
+class ConvBlock(layers.Layer):
+  def __init__(self, embed_dim):
+    super(ConvBlock, self).__init__()
+    self.embed_dim = embed_dim
+    self.const = None
+    self.conv000 = layers.Conv1D(embed_dim, 3, padding='same', activation=tf.nn.gelu,
+                                 kernel_constraint=self.const,
+                    )
+    self.conv010 = layers.Conv1D(embed_dim, 5, padding='same', activation=tf.nn.gelu,
+                                 kernel_constraint=self.const,
+                    )
+    self.conv011 = layers.Conv1D(embed_dim, 7, padding='same', activation=tf.nn.gelu,
+                                 kernel_constraint=self.const,
+                    )
+
+    self.conv020 = layers.Conv1D(embed_dim, 7, padding='same', activation=tf.nn.gelu,
+                                 kernel_constraint=self.const,
+                    )
+    self.conv021 = layers.Conv1D(embed_dim, 15, padding='same', activation=tf.nn.gelu,
+                                 kernel_constraint=self.const,
+                    )
+    self.add = layers.Add()
+
+    self.conv100 = layers.Conv1D(embed_dim, 3, padding='same',
+                                 activation=tf.nn.gelu,
+                                 kernel_constraint=self.const,)
+    self.bn0 = layers.BatchNormalization()
+    self.bn1 = layers.BatchNormalization()
+    self.dw_conv = layers.DepthwiseConv1D(embed_dim, 1, padding='same')
+    self.activation = layers.Activation(tf.nn.gelu)
+
+  def call(self, inputs, training):
+    # Could add skip connection here?
+    xa = self.conv000(inputs)
+
+    xb = self.conv010(xa)
+    xb = self.conv011(xb)
+
+    xc = self.conv020(xa)
+    xc = self.conv021(xc)
+
+    xa = self.add([xb, xc])
+    xa = self.conv100(xa)
+    xa = self.bn0(xa)
+    xa = self.dw_conv(xa)
+    xa = self.bn1(xa)
+    xa = self.activation(xa)
+    return xa
+
+def chunk_module(input_len, embed_dim, num_heads, attention_range,
+               start_offset=0, end_offset=0):
+  projection_dim = embed_dim
+  inputs = layers.Input(shape=(input_len, embed_dim))
+  xa = inputs
+  xa0 = SelfAttnChunk(projection_dim, num_heads, projection_dim//2, attention_range,
+            start_offset, end_offset, 1, include_embedding_layer=False)(xa)
+
+  xa = ConvBlock(projection_dim)(xa0)
+  xa_skip = ConvBlock(projection_dim)(xa)
+
+  xa = layers.Dense(projection_dim, activation=tf.nn.gelu)(xa)
+  xa = ConvBlock(projection_dim)(xa)
+  xa = CrossAttnChunk(0, 0)([xa, xa0])
+  xa = layers.Dropout(0.25)(xa)
+  xa = ConvBlock(projection_dim)(xa)
+
+  xa = layers.Concatenate(axis=-1)([xa_skip, xa])
+
+  model = keras.Model(inputs=inputs, outputs=xa)
+  return model
+
+## STI Model
+class SplitTransformer(keras.Model):
+    def __init__(self,
+            embed_dim,
+            num_heads,
+            offset_before=0,
+            offset_after=0,
+            chunk_size=2000,
+            activation=tf.nn.gelu,
+            dropout_rate=0.25,
+            attn_block_repeats=1,
+            attention_range=100,
+            in_channel=2):
+        super(SplitTransformer, self).__init__()
+        self.embed_dim = embed_dim
+        self.num_heads = num_heads
+        self.chunk_size = chunk_size
+        self.activation = activation
+        self.dropout_rate = dropout_rate
+        self.attn_block_repeats = attn_block_repeats
+        self.attention_range = attention_range
+        self.offset_before = offset_before
+        self.offset_after = offset_after
+        self.in_channel = in_channel
+
+    def build(self, input_shape):
+        self.seq_len = input_shape[1]
+        self.chunk_starts = list(range(0, input_shape[1], self.chunk_size))
+        self.chunk_ends = []
+        for cs in self.chunk_starts:
+          self.chunk_ends.append(min(cs+self.chunk_size, input_shape[1]))
+        self.mask_starts = [max(0, cs-self.attention_range) for cs in self.chunk_starts]
+        self.mask_ends = [min(ce+self.attention_range, input_shape[1]) for ce in self.chunk_ends]
+        self.chunkers = [chunk_module(self.mask_ends[i] - self.mask_starts[i],
+                                      self.embed_dim, self.num_heads,
+                                      self.attention_range,
+                                      start_offset=cs - self.mask_starts[i],
+                                      end_offset=self.mask_ends[i]-self.chunk_ends[i]
+                                      ) for i,cs in enumerate(self.chunk_starts)]
+
+        self.concat_layer = layers.Concatenate(axis=-2)
+        self.embedding = GenoEmbeddings(self.embed_dim)
+        self.slice_layer = layers.Lambda(lambda x: x[:, self.offset_before:self.seq_len-self.offset_after], name="output_slicer")
+        self.after_concat_layer = layers.Conv1D(self.embed_dim//2, 5, padding='same', activation=tf.nn.gelu)
+        self.last_conv = layers.Conv1D(self.in_channel - 1, 5, padding='same', activation=tf.nn.softmax)
+        super(SplitTransformer, self).build(input_shape)
+
+
+    def call(self, inputs):
+        x = self.embedding(inputs)
+        chunks = [self.chunkers[i](x[:,
+                    self.mask_starts[i]:self.mask_ends[i]]) for i, chunker\
+                                                        in enumerate(self.chunkers)]
+        x = self.concat_layer(chunks)
+        x = self.after_concat_layer(x)
+        x = self.last_conv(x)
+        x = self.slice_layer(x)
+        return x
+
+## Loss
+class ImputationLoss(tf.keras.losses.Loss):
+    def call(self, y_true, y_pred):
+        y_pred = tf.convert_to_tensor(y_pred)
+        y_true = tf.cast(y_true, y_pred.dtype)
+
+        loss_obj = tf.keras.losses.CategoricalCrossentropy(reduction=tf.keras.losses.Reduction.SUM)
+        cat_loss = loss_obj(y_true, y_pred)
+
+        loss_obj = tf.keras.losses.KLDivergence(reduction=tf.keras.losses.Reduction.SUM)
+        kl_loss = loss_obj(y_true, y_pred)
+
+        return cat_loss + kl_loss
+
+
+## Model creation
+def create_model(args):
+    model =  SplitTransformer(embed_dim=args["embedding_dim"],
+            num_heads=args["num_heads"],
+            chunk_size=args["chunk_size"],
+            activation="gelu",
+            attention_range=args["chunk_overlap"],
+            in_channel=args["in_channel"],
+            offset_before=args["offset_before"],
+            offset_after=args["offset_after"])
+    optimizer = tfa.optimizers.LAMB(learning_rate=args["lr"])
+    model.compile(optimizer, loss=ImputationLoss(), metrics=tf.keras.metrics.CategoricalAccuracy())
+    return model
+
+def create_callbacks(metric = "val_loss", save_path="."):
+    reducelr = tf.keras.callbacks.ReduceLROnPlateau(
+        monitor= metric,
+        mode='auto',
+        factor=0.5,
+        patience=3,
+        verbose=0
+    )
+
+    earlystop = tf.keras.callbacks.EarlyStopping(
+        monitor= metric,
+        mode='auto',
+        patience= 10,
+        verbose=1,
+        restore_best_weights=True
+    )
+
+    checkpoint = tf.keras.callbacks.ModelCheckpoint(
+        save_path,
+        monitor= metric,
+        verbose= 0,
+        save_best_only= False,
+        save_weights_only= True,
+        mode= 'auto',
+        save_freq = 'epoch',
+    )
+
+
+    callbacks = [
+                reducelr,
+                earlystop,
+                checkpoint
+                 ]
+
+    return callbacks
+
 class DataReader:
     """
     If the reference is unphased, cannot handle phased target data, so the valid (ref, target) combinations are:
@@ -409,11 +807,133 @@ class DataReader:
         df.to_csv(file_name, sep=self.ref_separator, mode='a', index=False)
 
 
-def train_the_model(args):
+@tf.function()
+def add_attention_mask(X_sample, y_sample, depth, mr):
+  mask_size = tf.cast(X_sample.shape[0]*mr, dtype=tf.int32)
+  mask_idx = tf.reshape(tf.random.shuffle(tf.range(X_sample.shape[0]))[:mask_size], (-1, 1))
+  updates = tf.math.add(tf.zeros(shape=(mask_idx.shape[0]), dtype=tf.int32), depth-1)
+  X_masked = tf.tensor_scatter_nd_update(X_sample, mask_idx, updates)
+
+  return tf.one_hot(X_masked, depth), tf.one_hot(y_sample, depth-1)
+
+@tf.function()
+def onehot_encode(X_sample, depth):
+  return tf.one_hot(X_sample, depth)
+
+def get_training_dataset(x, batch_size, depth,
+                         offset_before=0, offset_after=0,
+                         training=True, masking_rate=0.8):
+  AUTO = tf.data.AUTOTUNE
+
+  dataset = tf.data.Dataset.from_tensor_slices((x, x[:, offset_before:x.shape[1]-offset_after]))
+  # # Add Attention Mask
+
+  if training:
+    dataset = dataset.shuffle(x.shape[0], reshuffle_each_iteration=True)
+    dataset = dataset.repeat()
+
+  # Add Attention Mask
+  dataset = dataset.map(lambda xx, yy: add_attention_mask(xx, yy, depth, masking_rate),
+                        num_parallel_calls=AUTO, deterministic=False)
+
+  # Prefetech to not map the whole dataset
+  dataset = dataset.prefetch(AUTO)
+
+  dataset = dataset.batch(batch_size, drop_remainder=True, num_parallel_calls=AUTO)
+
+  return strategy.experimental_distribute_dataset(dataset)
+
+def get_test_dataset(x, batch_size, depth):
+  AUTO = tf.data.AUTOTUNE
+  dataset = tf.data.Dataset.from_tensor_slices((x))
+  # one-hot encode
+  dataset = dataset.map(lambda xx: onehot_encode(xx, depth), num_parallel_calls=AUTO, deterministic=True)
+
+  # Prefetech to not map the whole dataset
+  dataset = dataset.prefetch(AUTO)
+
+  dataset = dataset.batch(batch_size, drop_remainder=False, num_parallel_calls=AUTO)
+
+  return dataset
+
+
+def create_directories(save_dir,
+                       models_dir="models",
+                       outputs="out") -> None:
+    for dir in [save_dir,
+               f"{save_dir}/{models_dir}",
+               f"{save_dir}/{outputs}"]:
+        if not os.path.exists(dir):
+            os.makedirs(dir)
+    pass
+
+
+
+def train_the_model(args) -> None:
+    if args.val_frac <= 0 or args.val_frac >=1:
+        raise args.ArgumentError("Validation fraction should be a positive value in range of (0, 1)")
+
+    NUM_EPOCHS = args.epochs
+    BATCH_SIZE = args.batch_size_per_gpu * N_REPLICAS
+
+
+    create_directories(args.save_dir)
+
+    dr = DataReader()
+    dr.assign_training_set(file_path=args.ref,
+                           target_is_gonna_be_phased_or_haps=args.tihp,
+                           variants_as_columns=args.ref_vac,
+                           delimiter=args.ref_sep,
+                           file_format=args.ref_file_format,
+                           first_column_is_index=args.ref_fcai,
+                           comments=args.ref_comment)
+
+    x_train_indices, x_valid_indices = train_test_split(range(dr.get_ref_set(0, 1).shape[0]),
+                                                      test_size=args.val_frac,
+                                                      random_state=2022,
+                                                      shuffle=True,)
+    steps_per_epoch = len(x_train_indices) // BATCH_SIZE
+    validation_steps = len(x_valid_indices) // BATCH_SIZE
+
+    model_args = {
+        "embedding_dim": args.embed_dim,
+        "num_heads": args.na_heads,
+        "chunk_size": args.cs,
+        "chunk_overlap": args.co,
+        "in_channel": dr.SEQ_DEPTH,
+        "offset_before": 1
+    }
+    learning_rate = args.lr
+    dropout_rate = 0.25
+    attention_range = args.co
+    chunk_size = min(dr.VARIANT_COUNT, args.cs)
+    max_features_len_per_model = min(dr.VARIANT_COUNT, args.sites_per_model)
+
+    model = create_model()
+    model.build((1, max_features_len_per_model, inChannel))
+    model.summary()
     pass
 
 
 def impute_the_target(args):
+    if args.target is None:
+        raise argparse.ArgumentError("Target file missing for imputation. use -target to specify a target file.")
+
+
+    dr = DataReader()
+    dr.assign_training_set(file_path=args.ref,
+                           target_is_gonna_be_phased_or_haps=args.tihp,
+                           variants_as_columns=args.ref_vac,
+                           delimiter=args.ref_sep,
+                           file_format=args.ref_file_format,
+                           first_column_is_index=args.ref_fcai,
+                           comments=args.ref_comment)
+    dr.assign_test_set(file_path=args.target,
+                       variants_as_columns=args.target_vac,
+                       delimiter=args.target_sep,
+                       file_format=args.target_file_format,
+                       first_column_is_index=args.target_fcai,
+                       comments=args.target_comment)
     pass
 
 
@@ -432,8 +952,8 @@ def main(args):
     parser.add_argument('-mode', type=str, help='Operation mode: impute | train (default=train)',
                         choices=['impute', 'train'], default='train')
     ## Input args
-    parser.add_argument('-ref', type=str, required=True, help='Reference file path')
-    parser.add_argument('-target', type=str, required=False, help='[optional] Target file path')
+    parser.add_argument('-ref', type=str, required=True, help='Reference file path.')
+    parser.add_argument('-target', type=str, required=False, help='Target file path. Must be provided in "impute" mode.')
     parser.add_argument('-tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
     parser.add_argument('-ref-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the reference file (default="\\t").', default="\t")
@@ -454,8 +974,8 @@ def main(args):
                         default="infer",
                         choices=['infer', 'vcf', 'csv', 'tsv'])
 
-    ## path args
-    parser.add_argument('-save_dir', type=str, required=True, help='the path to save the results and the model.\n'
+    ## save args
+    parser.add_argument('-save-dir', type=str, required=True, help='the path to save the results and the model.\n'
                                                                    'This path is also used to load a trained model for imputation.')
 
 
@@ -464,7 +984,10 @@ def main(args):
     parser.add_argument('-cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)', default=2000)
     parser.add_argument('-sites-per-model', type=int, required=False, help='Number of SNPs/SVs used per model(default 30000)', default=30000)
 
-    ## Model hyper-params
+    ## Model (hyper-)params
+    parser.add_argument('-mr', type=float, required=False, help='Masking rate(default 0.8)', default=0.8)
+    parser.add_argument('-val-frac', type=float, required=False, help='Fraction of reference samples to be used for validation (default=0.1).', default=0.1)
+    parser.add_argument('-epochs', type=int, required=False, help='Maximum number of epochs(default 1000)', default=1000)
     parser.add_argument('-na-heads', type=int, required=False, help='Number of attention heads(default 16)', default=16)
     parser.add_argument('-embed-dim', type=int, required=False, help='Embedding dimension size(default 128)', default=128)
     parser.add_argument('-lr', type=float, required=False, help='Learning Rate (default 0.001)', default=0.001)
