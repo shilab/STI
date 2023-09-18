@@ -426,6 +426,10 @@ def main(args):
     parser.add_argument('-ref', type=str, required=True, help='Reference file path')
     parser.add_argument('-target', type=str, required=False, help='[optional] Target file path')
     parser.add_argument('-tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
+    parser.add_argument('-ref-comment', type=str, required=False,
+                        help='The character(s) used to indicate comment lines in the reference file (default="\\t").', default="\t")
+    parser.add_argument('-target-comment', type=str, required=False,
+                        help='The character(s) used to indicate comment lines in the target file (default="\\t").', default="\t")
     parser.add_argument('-ref-sep', type=str, required=False, help='The separator used in the reference input file (If -ref-file-format is infer, this argument will be inferred as well).')
     parser.add_argument('-target-sep', type=str, required=False, help='The separator used in the target input file (If -target-file-format is infer, this argument will be inferred as well).')
     parser.add_argument('-ref-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the reference file (default: False).', default=False)
