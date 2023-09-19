@@ -20,6 +20,8 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import f1_score
 from tensorflow.keras.constraints import Constraint
 from scipy.spatial.distance import squareform
+import json
+
 print("Tensorflow version " + tf.__version__)
 
 strategy = tf.distribute.MirroredStrategy()
@@ -379,7 +381,7 @@ def create_model(args):
     model =  SplitTransformer(embed_dim=args["embedding_dim"],
             num_heads=args["num_heads"],
             chunk_size=args["chunk_size"],
-            activation="gelu",
+            activation=tf.nn.gelu,
             attention_range=args["chunk_overlap"],
             in_channel=args["in_channel"],
             offset_before=args["offset_before"],
@@ -868,6 +870,19 @@ def create_directories(save_dir,
     pass
 
 
+def load_chunk_status(save_dir, break_points):
+    chunk_info = {ww:False for ww in list(range(len(break_points) - 1))}
+    if os.path.isfile(f"{save_dir}/models/chunk_info.json"):
+        with open(f"{save_dir}/models/chunk_info.json", 'r') as f:
+            loaded_chunks_info = json.load(f)
+            if isinstance(loaded_chunks_info, dict) and len(loaded_chunks_info) == len(chunk_info):
+                print("Resuming the training...")
+                chunk_info = loaded_chunks_info
+    return chunk_info
+
+def save_chunk_status(save_dir, chunk_info) -> None:
+    with open(f"{save_dir}/models/chunk_info.json", "w") as outfile:
+        json.dump(chunk_info, outfile)
 
 def train_the_model(args) -> None:
     if args.val_frac <= 0 or args.val_frac >=1:
@@ -888,6 +903,11 @@ def train_the_model(args) -> None:
                            first_column_is_index=args.ref_fcai,
                            comments=args.ref_comment)
 
+    learning_rate = args.lr
+    dropout_rate = 0.25
+    chunk_size = min(dr.VARIANT_COUNT, args.cs)
+    max_features_len_per_model = min(dr.VARIANT_COUNT, args.sites_per_model)
+
     x_train_indices, x_valid_indices = train_test_split(range(dr.get_ref_set(0, 1).shape[0]),
                                                       test_size=args.val_frac,
                                                       random_state=args.random_seed,
@@ -896,24 +916,51 @@ def train_the_model(args) -> None:
     validation_steps = len(x_valid_indices) // BATCH_SIZE
 
     break_points = list(np.arange(0, dr.VARIANT_COUNT, args.sites_per_model)) + [dr.VARIANT_COUNT]
+    chunk_done = load_chunk_status(args.save_dir, break_points)
+    for w in range(len(break_points) - 1):
+        if chunk_done[w]:
+            print(f"Skipping part {w+1} out of {len(break_points) - 1} due to previous training.")
+        print(f"Doing part {w+1} out of {len(break_points) - 1}")
+        final_start_pos = max(0, break_points[w] - 2 * args.co)
+        final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
+        offset_before = break_points[w] - final_start_pos
+        offset_after = final_end_pos - break_points[w + 1]
+        ref_set = dr.get_ref_set(final_start_pos, final_end_pos).astype(np.int32)
+        print(f"Data shape: {ref_set.shape}")
+        train_dataset = get_training_dataset(ref_set[x_train_indices], BATCH_SIZE,
+                                    depth=dr.SEQ_DEPTH,
+                                    offset_before=offset_before,
+                                    offset_after=offset_after,
+                                    masking_rate=args.mr)
+        valid_dataset = get_training_dataset(ref_set[x_valid_indices], BATCH_SIZE,
+                                    depth=dr.SEQ_DEPTH,
+                                    offset_before=offset_before,
+                                    offset_after=offset_after, training=False,
+                                    masking_rate=args.mr)
+        del ref_set
+        K.clear_session()
+        callbacks = create_callbacks(save_path=f"{args.save_dir}/models/w_{w}")
+        model_args = {
+            "embedding_dim": args.embed_dim,
+            "num_heads": args.na_heads,
+            "chunk_size": args.cs,
+            "chunk_overlap": args.co,
+            "in_channel": dr.SEQ_DEPTH,
+            "offset_before": 1
+        }
+        with strategy.scope():
+            model = create_model(model_args)
+            history = model.fit(train_dataset, steps_per_epoch=steps_per_epoch,
+                                epochs=NUM_EPOCHS,
+                                validation_data=valid_dataset,
+                                validation_steps=validation_steps,
+                                callbacks=callbacks, verbose=1)
 
-    model_args = {
-        "embedding_dim": args.embed_dim,
-        "num_heads": args.na_heads,
-        "chunk_size": args.cs,
-        "chunk_overlap": args.co,
-        "in_channel": dr.SEQ_DEPTH,
-        "offset_before": 1
-    }
-    learning_rate = args.lr
-    dropout_rate = 0.25
-    attention_range = args.co
-    chunk_size = min(dr.VARIANT_COUNT, args.cs)
-    max_features_len_per_model = min(dr.VARIANT_COUNT, args.sites_per_model)
 
-    model = create_model()
-    model.build((1, max_features_len_per_model, inChannel))
-    model.summary()
+
+
+    with open('commandline_args.txt', 'w') as f:
+        json.dump(args.__dict__, f, indent=2)
     pass
 
 
@@ -951,50 +998,51 @@ def main(args):
     parser = argparse.ArgumentParser(description='ShiLab\'s Imputation model (STI v1.1).')
 
     ## Function mode
-    parser.add_argument('-mode', type=str, help='Operation mode: impute | train (default=train)',
+    parser.add_argument('--mode', type=str, help='Operation mode: impute | train (default=train)',
                         choices=['impute', 'train'], default='train')
+    parser.add_argument('--force-training', type=bool, required=True, help='Whether the target is going to be haps or phased.')
     ## Input args
-    parser.add_argument('-ref', type=str, required=True, help='Reference file path.')
-    parser.add_argument('-target', type=str, required=False, help='Target file path. Must be provided in "impute" mode.')
-    parser.add_argument('-tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
-    parser.add_argument('-ref-comment', type=str, required=False,
+    parser.add_argument('--ref', type=str, required=True, help='Reference file path.')
+    parser.add_argument('--target', type=str, required=False, help='Target file path. Must be provided in "impute" mode.')
+    parser.add_argument('--tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
+    parser.add_argument('--ref-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the reference file (default="\\t").', default="\t")
-    parser.add_argument('-target-comment', type=str, required=False,
+    parser.add_argument('--target-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the target file (default="\\t").', default="\t")
-    parser.add_argument('-ref-sep', type=str, required=False, help='The separator used in the reference input file (If -ref-file-format is infer, this argument will be inferred as well).')
-    parser.add_argument('-target-sep', type=str, required=False, help='The separator used in the target input file (If -target-file-format is infer, this argument will be inferred as well).')
-    parser.add_argument('-ref-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the reference file (default: False).', default=False)
-    parser.add_argument('-target-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the target file (default: False).', default=False)
-    parser.add_argument('-ref-fcai', type=bool, required=False, help='[Used for non-vcf formats] Whether the first column in the reference file is (samples | variants) index (default: False).', default=False)
-    parser.add_argument('-target-fcai', type=bool, required=False, help='[Used for non-vcf formats] Whether the first column in the target file is (samples | variants) index (default: False).', default=False)
-    parser.add_argument('-ref-file-format', type=str, required=False,
+    parser.add_argument('--ref-sep', type=str, required=False, help='The separator used in the reference input file (If -ref-file-format is infer, this argument will be inferred as well).')
+    parser.add_argument('--target-sep', type=str, required=False, help='The separator used in the target input file (If -target-file-format is infer, this argument will be inferred as well).')
+    parser.add_argument('--ref-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the reference file (default: False).', default=False)
+    parser.add_argument('--target-vac', type=bool, required=False, help='[Used for non-vcf formats] Whether variants appear as columns in the target file (default: False).', default=False)
+    parser.add_argument('--ref-fcai', type=bool, required=False, help='[Used for non-vcf formats] Whether the first column in the reference file is (samples | variants) index (default: False).', default=False)
+    parser.add_argument('--target-fcai', type=bool, required=False, help='[Used for non-vcf formats] Whether the first column in the target file is (samples | variants) index (default: False).', default=False)
+    parser.add_argument('--ref-file-format', type=str, required=False,
                         help='Reference file format: infer | vcf | csv | tsv. Default is infer.',
                         default="infer",
                         choices=['infer', 'vcf', 'csv', 'tsv'])
-    parser.add_argument('-target-file-format', type=str, required=False,
+    parser.add_argument('--target-file-format', type=str, required=False,
                         help='Target file format: infer | vcf | csv | tsv. Default is infer.',
                         default="infer",
                         choices=['infer', 'vcf', 'csv', 'tsv'])
 
     ## save args
-    parser.add_argument('-save-dir', type=str, required=True, help='the path to save the results and the model.\n'
+    parser.add_argument('--save-dir', type=str, required=True, help='the path to save the results and the model.\n'
                                                                    'This path is also used to load a trained model for imputation.')
 
 
     ## Chunking args
-    parser.add_argument('-co', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)', default=100)
-    parser.add_argument('-cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)', default=2000)
-    parser.add_argument('-sites-per-model', type=int, required=False, help='Number of SNPs/SVs used per model(default 30000)', default=30000)
+    parser.add_argument('--co', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)', default=100)
+    parser.add_argument('--cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)', default=2000)
+    parser.add_argument('--sites-per-model', type=int, required=False, help='Number of SNPs/SVs used per model(default 30000)', default=30000)
 
     ## Model (hyper-)params
-    parser.add_argument('-mr', type=float, required=False, help='Masking rate(default 0.8)', default=0.8)
-    parser.add_argument('-val-frac', type=float, required=False, help='Fraction of reference samples to be used for validation (default=0.1).', default=0.1)
-    parser.add_argument('-random-seed', type=int, required=False, help='Random seed used for splitting the data into training and validation sets (default 2022).', default=2022)
-    parser.add_argument('-epochs', type=int, required=False, help='Maximum number of epochs (default 1000)', default=1000)
-    parser.add_argument('-na-heads', type=int, required=False, help='Number of attention heads (default 16)', default=16)
-    parser.add_argument('-embed-dim', type=int, required=False, help='Embedding dimension size (default 128)', default=128)
-    parser.add_argument('-lr', type=float, required=False, help='Learning Rate (default 0.001)', default=0.001)
-    parser.add_argument('-batch-size-per-gpu', type=int, required=False, help='Batch size per gpu(default 4)', default=4)
+    parser.add_argument('--mr', type=float, required=False, help='Masking rate(default 0.8)', default=0.8)
+    parser.add_argument('--val-frac', type=float, required=False, help='Fraction of reference samples to be used for validation (default=0.1).', default=0.1)
+    parser.add_argument('--random-seed', type=int, required=False, help='Random seed used for splitting the data into training and validation sets (default 2022).', default=2022)
+    parser.add_argument('--epochs', type=int, required=False, help='Maximum number of epochs (default 1000)', default=1000)
+    parser.add_argument('--na-heads', type=int, required=False, help='Number of attention heads (default 16)', default=16)
+    parser.add_argument('--embed-dim', type=int, required=False, help='Embedding dimension size (default 128)', default=128)
+    parser.add_argument('--lr', type=float, required=False, help='Learning Rate (default 0.001)', default=0.001)
+    parser.add_argument('--batch-size-per-gpu', type=int, required=False, help='Batch size per gpu(default 4)', default=4)
 
 
     args = parser.parse_args()
