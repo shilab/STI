@@ -1,9 +1,7 @@
 import argparse
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='ShiLab\'s Imputation model (STI v1.1).')
+import numpy as np
 
-    ## Function mode
-    parser.add_argument('--mode', type=str, help='Operation mode: impute | train (default=train)',
-                        choices=['impute', 'train'], default='train')
-    args = parser.parse_args()
-    print(args.mode)
+if __name__ == '__main__':
+    break_points = list(np.arange(0, 526, 2000))+ [256]
+    chunk_info = {ww: False for ww in list(range(len(break_points) - 1))}
+    print(chunk_info)

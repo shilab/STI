@@ -903,11 +903,6 @@ def train_the_model(args) -> None:
                            first_column_is_index=args.ref_fcai,
                            comments=args.ref_comment)
 
-    learning_rate = args.lr
-    dropout_rate = 0.25
-    chunk_size = min(dr.VARIANT_COUNT, args.cs)
-    max_features_len_per_model = min(dr.VARIANT_COUNT, args.sites_per_model)
-
     x_train_indices, x_valid_indices = train_test_split(range(dr.get_ref_set(0, 1).shape[0]),
                                                       test_size=args.val_frac,
                                                       random_state=args.random_seed,
