@@ -607,9 +607,6 @@ class DataReader:
             self.genotype_vals)
         self.MISSING_VALUE = self.allele_count if self.is_phased else len(self.genotype_vals)
 
-        def key_gen(v1, v2):
-            return f"{v1}{final_allele_sep}{v2}"
-
         if self.is_phased:
             self.hap_map = {str(i): i for i in range(self.allele_count)}
             self.hap_map.update({".": self.allele_count})
