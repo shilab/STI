@@ -578,16 +578,19 @@ class DataReader:
                 "The reference contains unphased diploids while the target will be phased or haploid data. The model cannot predict the target at this rate.")
 
         self.VARIANT_COUNT = self.reference_panel.shape[0]
-        print(f"{self.reference_panel.shape[0]} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
+        print(f"{self.reference_panel.shape[1]} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
 
         self.is_phased = target_is_gonna_be_phased_or_haps and (self.ref_is_phased or self.ref_is_hap)
 
         original_allele_sep = "|" if self.ref_is_phased or self.ref_is_hap else "/"
         final_allele_sep = "|" if self.is_phased else "/"
 
-        def get_num_allels(g):
-            v1, v2 = g.split(final_allele_sep)
-            return max(int(v1), int(v2)) + 1
+        def get_diploid_allels(genotype_vals):
+            allele_set = set()
+            for genotype_val in genotype_vals:
+                v1, v2 = genotype_val.split(final_allele_sep)
+                allele_set.update([v1, v2])
+            return np.array(allele_set)
 
         genotype_vals = np.unique(self.reference_panel.iloc[:, self.ref_sample_value_index - 1:].values)
         if self.ref_is_phased and not target_is_gonna_be_phased_or_haps:  # In this case ref is not haps due to the above checks
@@ -602,23 +605,22 @@ class DataReader:
                                                                                    inplace=True)
 
         self.genotype_vals = np.unique(genotype_vals)
-
-        self.allele_count = max(map(get_num_allels, self.genotype_vals)) if not self.ref_is_hap else len(
-            self.genotype_vals)
+        self.alleles = get_diploid_allels(self.genotype_vals) if not self.ref_is_hap else self.genotype_vals
+        self.allele_count = len(self.alleles)
         self.MISSING_VALUE = self.allele_count if self.is_phased else len(self.genotype_vals)
 
         if self.is_phased:
-            self.hap_map = {str(i): i for i in range(self.allele_count)}
-            self.hap_map.update({".": self.allele_count})
+            self.hap_map = {str(v): i for i, v in enumerate(self.alleles)}
+            self.hap_map.update({".": self.MISSING_VALUE})
             self.r_hap_map = {i: k for k, i in self.hap_map.items()}
             self.map_preds_2_allele = np.vectorize(lambda x: self.r_hap_map[x])
         else:
             unphased_missing_genotype = "./."
             self.replacement_dict = {g: i for i, g in enumerate(self.genotype_vals)}
-            self.replacement_dict[unphased_missing_genotype] = len(self.genotype_vals)
+            self.replacement_dict[unphased_missing_genotype] = self.MISSING_VALUE
             self.reverse_replacement_dict = {v: k for k, v in enumerate(self.replacement_dict)}
 
-        self.SEQ_DEPTH = self.allele_count + 1
+        self.SEQ_DEPTH = self.allele_count + 1 if self.is_phased else len(self.genotype_vals)
         print("Done!")
 
     def assign_test_set(self, file_path,
