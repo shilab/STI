@@ -1,4 +1,4 @@
-import os, sys, math, re, random, shutil, gzip, argparse
+import os, sys, math, re, random, shutil, gzip, argparse, pathlib
 from tqdm import tqdm
 import numpy as np
 from typing import Union
@@ -23,8 +23,7 @@ from scipy.spatial.distance import squareform
 import json
 
 print("Tensorflow version " + tf.__version__)
-
-strategy = tf.distribute.MirroredStrategy()
+strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.ReductionToOneDevice())
 N_REPLICAS = strategy.num_replicas_in_sync
 print(f"Num gpus to be used: {N_REPLICAS}")
 
@@ -265,7 +264,7 @@ class ConvBlock(layers.Layer):
                                      kernel_constraint=self.const, )
         self.bn0 = layers.BatchNormalization()
         self.bn1 = layers.BatchNormalization()
-        self.dw_conv = layers.DepthwiseConv1D(embed_dim, 1, padding='same')
+        self.dw_conv = layers.Conv1D(embed_dim, 1, padding='same')
         self.activation = layers.Activation(tf.nn.gelu)
 
     def call(self, inputs, training):
@@ -421,7 +420,7 @@ def create_callbacks(metric="val_loss", save_path="."):
         save_path,
         monitor=metric,
         verbose=0,
-        save_best_only=False,
+        save_best_only=True,
         save_weights_only=True,
         mode='auto',
         save_freq='epoch',
@@ -507,7 +506,6 @@ class DataReader:
                          index_col=0 if first_column_is_index else None,
                          dtype='category',
                          names=data_header.strip().split(separator) if is_vcf else None)
-        # df = df.astype('category')
         return df
 
     def __find_file_extension(self, file_path, file_format, delimiter):
@@ -578,7 +576,7 @@ class DataReader:
                 "The reference contains unphased diploids while the target will be phased or haploid data. The model cannot predict the target at this rate.")
 
         self.VARIANT_COUNT = self.reference_panel.shape[0]
-        print(f"{self.reference_panel.shape[1]} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
+        print(f"{self.reference_panel.shape[1] - (self.ref_sample_value_index - 1)} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
 
         self.is_phased = target_is_gonna_be_phased_or_haps and (self.ref_is_phased or self.ref_is_hap)
 
@@ -590,7 +588,7 @@ class DataReader:
             for genotype_val in genotype_vals:
                 v1, v2 = genotype_val.split(final_allele_sep)
                 allele_set.update([v1, v2])
-            return np.array(allele_set)
+            return np.array(list(allele_set))
 
         genotype_vals = np.unique(self.reference_panel.iloc[:, self.ref_sample_value_index - 1:].values)
         if self.ref_is_phased and not target_is_gonna_be_phased_or_haps:  # In this case ref is not haps due to the above checks
@@ -837,7 +835,7 @@ def get_training_dataset(x, batch_size, depth,
                          offset_before=0, offset_after=0,
                          training=True, masking_rate=0.8):
     AUTO = tf.data.AUTOTUNE
-
+    
     dataset = tf.data.Dataset.from_tensor_slices((x, x[:, offset_before:x.shape[1] - offset_after]))
     # # Add Attention Mask
 
@@ -854,7 +852,13 @@ def get_training_dataset(x, batch_size, depth,
 
     dataset = dataset.batch(batch_size, drop_remainder=True, num_parallel_calls=AUTO)
 
-    return strategy.experimental_distribute_dataset(dataset)
+
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
+    dataset = dataset.with_options(options)  # use this as input for your model
+    dataset = strategy.experimental_distribute_dataset(dataset)
+
+    return dataset
 
 
 def get_test_dataset(x, batch_size, depth):
@@ -882,8 +886,15 @@ def create_directories(save_dir,
     pass
 
 
-def clear_dir(target_dir)-> None:
-    os.rmdir(target_dir)
+def clear_dir(path) -> None:
+    # credit: https://stackoverflow.com/a/72982576/4260559
+    for entry in os.scandir(path):
+        if entry.is_dir():
+            clear_dir(entry)
+        else:
+            os.remove(entry)
+    os.rmdir(path) # if you just want to delete the dir content but not the dir itself, remove this line
+
 
 def load_chunk_info(save_dir, break_points):
     chunk_info = {ww: False for ww in list(range(len(break_points) - 1))}
@@ -892,7 +903,7 @@ def load_chunk_info(save_dir, break_points):
             loaded_chunks_info = json.load(f)
             if isinstance(loaded_chunks_info, dict) and len(loaded_chunks_info) == len(chunk_info):
                 print("Resuming the training...")
-                chunk_info = loaded_chunks_info
+                chunk_info = {int(k):v for k,v in loaded_chunks_info.items()}
     return chunk_info
 
 
@@ -934,6 +945,7 @@ def train_the_model(args) -> None:
     for w in range(len(break_points) - 1):
         if chunks_done[w]:
             print(f"Skipping part {w + 1} out of {len(break_points) - 1} due to previous training.")
+            continue
         print(f"Doing part {w + 1} out of {len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
@@ -960,7 +972,9 @@ def train_the_model(args) -> None:
             "chunk_size": args.cs,
             "chunk_overlap": args.co,
             "in_channel": dr.SEQ_DEPTH,
-            "offset_before": 1
+            "offset_before": offset_before,
+            "offset_after": offset_after,
+            "lr": args.lr
         }
         with strategy.scope():
             model = create_model(model_args)
@@ -1083,10 +1097,18 @@ def main():
                         default=4)
 
     args = parser.parse_args()
+    
+    if not (args.save_dir.startswith("./") or args.save_dir.startswith("/")):
+        args.save_dir = f"./{args.save_dir}"
+    print("Save directory will be:", args.save_dir)
+
+    
     if args.mode == 'train':
         train_the_model(args)
     else:
         impute_the_target(args)
+    
+    
 
 
 if __name__ == '__main__':

@@ -1,0 +1,2 @@
+python3 STI\ V1.1.py --mode train --ref ./data/test_purpose_datasets/yeast_genotype_train.txt --tihp True --ref-sep '\t' --ref-vac True --ref-fcai True --ref-file-format tsv --save-dir ./yeast_results --mr 0.5 --batch-size-per-gpu 4
+python3 STI\ V1.1.py --mode train --ref ./data/test_purpose_datasets/Chr22_Dels_train_fold_1.vcf --tihp True --ref-file-format vcf --save-dir ./chr22_dels_results --mr 0.5 --batch-size-per-gpu 4
