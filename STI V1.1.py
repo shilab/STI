@@ -578,7 +578,7 @@ class DataReader:
                 "The reference contains unphased diploids while the target will be phased or haploid data. The model cannot predict the target at this rate.")
 
         self.VARIANT_COUNT = self.reference_panel.shape[0]
-        print(f"{self.VARIANT_COUNT} {'haplotype' if self.ref_is_hap else 'diplotype'} variants found!")
+        print(f"{self.reference_panel.shape[0]} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
 
         self.is_phased = target_is_gonna_be_phased_or_haps and (self.ref_is_phased or self.ref_is_hap)
 
@@ -695,7 +695,6 @@ class DataReader:
     def __get_forward_data(self, data: pd.DataFrame) -> np.ndarray:
         if self.is_phased:
             is_haps = "|" not in data.iloc[0, 0]
-            print(f"__get_forward_data > data.iloc[0, 0]={data.iloc[0, 0]}, is_haps={is_haps}")
             if not is_haps:
                 return self.__diploids_to_hap_vecs(data)
             else:
@@ -881,6 +880,9 @@ def create_directories(save_dir,
     pass
 
 
+def clear_dir(target_dir)-> None:
+    os.rmdir(target_dir)
+
 def load_chunk_info(save_dir, break_points):
     chunk_info = {ww: False for ww in list(range(len(break_points) - 1))}
     if os.path.isfile(f"{save_dir}/models/chunks_info.json"):
@@ -899,13 +901,16 @@ def save_chunk_status(save_dir, chunk_info) -> None:
 
 def train_the_model(args) -> None:
     if args.val_frac <= 0 or args.val_frac >= 1:
-        raise args.ArgumentError("Validation fraction should be a positive value in range of (0, 1)")
+        raise args.ArgumentError(message="Validation fraction should be a positive value in range of (0, 1)")
+    if args.force_training:
+        clear_dir(args.save_dir)
 
     NUM_EPOCHS = args.epochs
     BATCH_SIZE = args.batch_size_per_gpu * N_REPLICAS
 
     create_directories(args.save_dir)
-
+    with open(f"{args.save_dir}/commandline_args.json", 'w') as f:
+            json.dump(args.__dict__, f, indent=4)
     dr = DataReader()
     dr.assign_training_set(file_path=args.ref,
                            target_is_gonna_be_phased_or_haps=args.tihp,
@@ -965,14 +970,10 @@ def train_the_model(args) -> None:
             chunks_done[w] = True
             save_chunk_status(args.save_dir, chunks_done)
 
-    with open('commandline_args.txt', 'w') as f:
-        json.dump(args.__dict__, f, indent=2)
-    pass
-
 
 def impute_the_target(args):
     if args.target is None:
-        raise argparse.ArgumentError("Target file missing for imputation. use -target to specify a target file.")
+        raise argparse.ArgumentError(message="Target file missing for imputation. use -target to specify a target file.")
 
     dr = DataReader()
     dr.assign_training_set(file_path=args.ref,
@@ -991,7 +992,7 @@ def impute_the_target(args):
     pass
 
 
-def main(args):
+def main():
     '''
     target_is_gonna_be_phased_or_haps:bool,
     variants_as_columns:bool=False,
@@ -1005,8 +1006,9 @@ def main(args):
     ## Function mode
     parser.add_argument('--mode', type=str, help='Operation mode: impute | train (default=train)',
                         choices=['impute', 'train'], default='train')
-    parser.add_argument('--force-training', type=bool, required=True,
-                        help='Whether the target is going to be haps or phased.')
+    parser.add_argument('--force-training', type=bool, required=False,
+                        help='Whether to clean previously saved models in target directory and restart the training ('
+                             'True | False)', default=False)
     ## Input args
     parser.add_argument('--ref', type=str, required=True, help='Reference file path.')
     parser.add_argument('--target', type=str, required=False,
@@ -1014,25 +1016,31 @@ def main(args):
     parser.add_argument('--tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
     parser.add_argument('--ref-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the reference file (default="\\t").',
-                        default="\t")
+                        default="##")
     parser.add_argument('--target-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the target file (default="\\t").',
                         default="\t")
     parser.add_argument('--ref-sep', type=str, required=False,
-                        help='The separator used in the reference input file (If -ref-file-format is infer, this argument will be inferred as well).')
+                        help='The separator used in the reference input file (If -ref-file-format is infer, '
+                             'this argument will be inferred as well).')
     parser.add_argument('--target-sep', type=str, required=False,
-                        help='The separator used in the target input file (If -target-file-format is infer, this argument will be inferred as well).')
+                        help='The separator used in the target input file (If -target-file-format is infer, '
+                             'this argument will be inferred as well).')
     parser.add_argument('--ref-vac', type=bool, required=False,
-                        help='[Used for non-vcf formats] Whether variants appear as columns in the reference file (default: False).',
+                        help='[Used for non-vcf formats] Whether variants appear as columns in the reference file ('
+                             'default: False).',
                         default=False)
     parser.add_argument('--target-vac', type=bool, required=False,
-                        help='[Used for non-vcf formats] Whether variants appear as columns in the target file (default: False).',
+                        help='[Used for non-vcf formats] Whether variants appear as columns in the target file ('
+                             'default: False).',
                         default=False)
     parser.add_argument('--ref-fcai', type=bool, required=False,
-                        help='[Used for non-vcf formats] Whether the first column in the reference file is (samples | variants) index (default: False).',
+                        help='[Used for non-vcf formats] Whether the first column in the reference file is (samples | '
+                             'variants) index (default: False).',
                         default=False)
     parser.add_argument('--target-fcai', type=bool, required=False,
-                        help='[Used for non-vcf formats] Whether the first column in the target file is (samples | variants) index (default: False).',
+                        help='[Used for non-vcf formats] Whether the first column in the target file is (samples | '
+                             'variants) index (default: False).',
                         default=False)
     parser.add_argument('--ref-file-format', type=str, required=False,
                         help='Reference file format: infer | vcf | csv | tsv. Default is infer.',
