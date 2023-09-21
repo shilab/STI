@@ -576,7 +576,8 @@ class DataReader:
                 "The reference contains unphased diploids while the target will be phased or haploid data. The model cannot predict the target at this rate.")
 
         self.VARIANT_COUNT = self.reference_panel.shape[0]
-        print(f"{self.reference_panel.shape[1] - (self.ref_sample_value_index - 1)} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
+        print(
+            f"{self.reference_panel.shape[1] - (self.ref_sample_value_index - 1)} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
 
         self.is_phased = target_is_gonna_be_phased_or_haps and (self.ref_is_phased or self.ref_is_hap)
 
@@ -835,7 +836,7 @@ def get_training_dataset(x, batch_size, depth,
                          offset_before=0, offset_after=0,
                          training=True, masking_rate=0.8):
     AUTO = tf.data.AUTOTUNE
-    
+
     dataset = tf.data.Dataset.from_tensor_slices((x, x[:, offset_before:x.shape[1] - offset_after]))
     # # Add Attention Mask
 
@@ -851,7 +852,6 @@ def get_training_dataset(x, batch_size, depth,
     dataset = dataset.prefetch(AUTO)
 
     dataset = dataset.batch(batch_size, drop_remainder=True, num_parallel_calls=AUTO)
-
 
     options = tf.data.Options()
     options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
@@ -893,7 +893,7 @@ def clear_dir(path) -> None:
             clear_dir(entry)
         else:
             os.remove(entry)
-    os.rmdir(path) # if you just want to delete the dir content but not the dir itself, remove this line
+    os.rmdir(path)  # if you just want to delete the dir content but not the dir itself, remove this line
 
 
 def load_chunk_info(save_dir, break_points):
@@ -903,7 +903,7 @@ def load_chunk_info(save_dir, break_points):
             loaded_chunks_info = json.load(f)
             if isinstance(loaded_chunks_info, dict) and len(loaded_chunks_info) == len(chunk_info):
                 print("Resuming the training...")
-                chunk_info = {int(k):v for k,v in loaded_chunks_info.items()}
+                chunk_info = {int(k): v for k, v in loaded_chunks_info.items()}
     return chunk_info
 
 
@@ -915,7 +915,7 @@ def save_chunk_status(save_dir, chunk_info) -> None:
 def train_the_model(args) -> None:
     if args.val_frac <= 0 or args.val_frac >= 1:
         raise args.ArgumentError(message="Validation fraction should be a positive value in range of (0, 1)")
-    if args.force_training:
+    if args.restart_training:
         clear_dir(args.save_dir)
 
     NUM_EPOCHS = args.epochs
@@ -923,7 +923,7 @@ def train_the_model(args) -> None:
 
     create_directories(args.save_dir)
     with open(f"{args.save_dir}/commandline_args.json", 'w') as f:
-            json.dump(args.__dict__, f, indent=4)
+        json.dump(args.__dict__, f, indent=4)
     dr = DataReader()
     dr.assign_training_set(file_path=args.ref,
                            target_is_gonna_be_phased_or_haps=args.tihp,
@@ -989,7 +989,8 @@ def train_the_model(args) -> None:
 
 def impute_the_target(args):
     if args.target is None:
-        raise argparse.ArgumentError(message="Target file missing for imputation. use -target to specify a target file.")
+        raise argparse.ArgumentError(
+            message="Target file missing for imputation. use -target to specify a target file.")
 
     dr = DataReader()
     dr.assign_training_set(file_path=args.ref,
@@ -1008,6 +1009,23 @@ def impute_the_target(args):
     pass
 
 
+def str_to_bool(s):
+    # Define accepted string values for True and False
+    true_values = ['true', '1']
+    false_values = ['false', '0']
+
+    # Convert the input string to lowercase for case-insensitive comparison
+    lower_s = s.lower()
+
+    # Check if the input string is in the list of true or false values
+    if lower_s in true_values:
+        return True
+    elif lower_s in false_values:
+        return False
+    else:
+        raise ValueError(f"Invalid boolean value: {s}. Accepted values are 'true', 'false', '0', '1'.")
+
+
 def main():
     '''
     target_is_gonna_be_phased_or_haps:bool,
@@ -1022,14 +1040,16 @@ def main():
     ## Function mode
     parser.add_argument('--mode', type=str, help='Operation mode: impute | train (default=train)',
                         choices=['impute', 'train'], default='train')
-    parser.add_argument('--force-training', type=bool, required=False,
-                        help='Whether to clean previously saved models in target directory and restart the training ('
-                             'True | False)', default=False)
+    parser.add_argument('--restart-training', type=str, required=False,
+                        help='Whether to clean previously saved models in target directory and restart the training',
+                        choices=['false', 'true', '0', '1'], default='0')
     ## Input args
     parser.add_argument('--ref', type=str, required=True, help='Reference file path.')
     parser.add_argument('--target', type=str, required=False,
                         help='Target file path. Must be provided in "impute" mode.')
-    parser.add_argument('--tihp', type=bool, required=True, help='Whether the target is going to be haps or phased.')
+    parser.add_argument('--tihp', type=str, required=True,
+                        help='Whether the target is going to be haps or phased.',
+                        choices=['false', 'true', '0', '1'])
     parser.add_argument('--ref-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the reference file (default="\\t").',
                         default="##")
@@ -1042,22 +1062,26 @@ def main():
     parser.add_argument('--target-sep', type=str, required=False,
                         help='The separator used in the target input file (If -target-file-format is infer, '
                              'this argument will be inferred as well).')
-    parser.add_argument('--ref-vac', type=bool, required=False,
+    parser.add_argument('--ref-vac', type=str, required=False,
                         help='[Used for non-vcf formats] Whether variants appear as columns in the reference file ('
-                             'default: False).',
-                        default=False)
-    parser.add_argument('--target-vac', type=bool, required=False,
+                             'default: false).',
+                        default='0',
+                        choices=['false', 'true', '0', '1'])
+    parser.add_argument('--target-vac', type=str, required=False,
                         help='[Used for non-vcf formats] Whether variants appear as columns in the target file ('
-                             'default: False).',
-                        default=False)
-    parser.add_argument('--ref-fcai', type=bool, required=False,
+                             'default: false).',
+                        default='0',
+                        choices=['false', 'true', '0', '1'])
+    parser.add_argument('--ref-fcai', type=str, required=False,
                         help='[Used for non-vcf formats] Whether the first column in the reference file is (samples | '
-                             'variants) index (default: False).',
-                        default=False)
-    parser.add_argument('--target-fcai', type=bool, required=False,
+                             'variants) index (default: false).',
+                        default='0',
+                        choices=['false', 'true', '0', '1'])
+    parser.add_argument('--target-fcai', type=str, required=False,
                         help='[Used for non-vcf formats] Whether the first column in the target file is (samples | '
                              'variants) index (default: False).',
-                        default=False)
+                        default='0',
+                        choices=['false', 'true', '0', '1'])
     parser.add_argument('--ref-file-format', type=str, required=False,
                         help='Reference file format: infer | vcf | csv | tsv. Default is infer.',
                         default="infer",
@@ -1097,18 +1121,23 @@ def main():
                         default=4)
 
     args = parser.parse_args()
-    
+
+    # Convert to boolean arguments
+    args.restart_training = str_to_bool(args.restart_training)
+    args.tihp = str_to_bool(args.tihp)
+    args.ref_vac = str_to_bool(args.ref_vac)
+    args.target_vac = str_to_bool(args.target_vac)
+    args.ref_fcai = str_to_bool(args.ref_fcai)
+    args.target_fcai = str_to_bool(args.target_fcai)
+
     if not (args.save_dir.startswith("./") or args.save_dir.startswith("/")):
         args.save_dir = f"./{args.save_dir}"
     print("Save directory will be:", args.save_dir)
 
-    
     if args.mode == 'train':
         train_the_model(args)
     else:
         impute_the_target(args)
-    
-    
 
 
 if __name__ == '__main__':
