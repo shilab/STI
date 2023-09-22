@@ -1,4 +1,5 @@
-import os, sys, math, re, random, shutil, gzip, argparse, pathlib
+import os, sys, shutil, gzip, argparse
+import logging
 from tqdm import tqdm
 import numpy as np
 from typing import Union
@@ -20,13 +21,14 @@ from sklearn.metrics import confusion_matrix
 from sklearn.metrics import f1_score
 from tensorflow.keras.constraints import Constraint
 from scipy.spatial.distance import squareform
+import datatable as dt
 import json
 
-print("Tensorflow version " + tf.__version__)
+logging.info("Tensorflow version " + tf.__version__)
 strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.ReductionToOneDevice())
 N_REPLICAS = strategy.num_replicas_in_sync
-print(f"Num gpus to be used: {N_REPLICAS}")
-
+logging.info(f"Num gpus to be used: {N_REPLICAS}")
+SUPPORTED_FILE_FORMATS = {"vcf", "csv", "tsv"}
 
 ## Custom Layers
 class CrossAttentionLayer(layers.Layer):
@@ -161,8 +163,6 @@ class GenoEmbeddings(layers.Layer):
         self.embeddings_constraint = constraints.get(embeddings_constraint)
 
     def build(self, input_shape):
-        # print(input_shape)
-
         self.num_of_allels = input_shape[-1]
         self.n_snps = input_shape[-2]
         self.position_embedding = layers.Embedding(
@@ -482,15 +482,17 @@ class DataReader:
         HG1023               1
         HG1024               0
         """
-        print("Reading the file...")
+        logging.info("Reading the file...")
         data_header = None
         path_sep = "/" if "/" in file_path else os.path.sep
+        line_counter = 0
         root, ext = os.path.splitext(file_path)
         with gzip.open(file_path, 'rt') if ext == '.gz' else open(file_path, 'rt') as f_in:
             # skip info
             while True:
                 line = f_in.readline()
                 if line.startswith(comments):
+                    line_counter += 1
                     if is_reference:
                         self.ref_n_header_lines.append(line)
                     else:
@@ -500,28 +502,31 @@ class DataReader:
                     break
         if data_header is None:
             raise IOError("The file only contains comments!")
-        df = pd.read_csv(file_path,
-                         sep=separator,
-                         comment=comments[0],
-                         index_col=0 if first_column_is_index else None,
-                         dtype='category',
-                         names=data_header.strip().split(separator) if is_vcf else None)
+        df = dt.fread(file=file_path,
+                   sep=separator, header=True, skip_to_line=line_counter+1)
+        df = df.to_pandas().astype('category')
+        if first_column_is_index:
+            df.set_index(df.columns[0], inplace=True)
         return df
 
     def __find_file_extension(self, file_path, file_format, delimiter):
         # Default assumption
         separator = "\t"
-        found_file_format = "vcf"
+        found_file_format = None
 
-        if file_format not in {"vcf", "csv", "tsv", "infer"}:
+        if file_format not in ["infer"]+list(SUPPORTED_FILE_FORMATS):
             raise ValueError("File extension must be one of {'vcf', 'csv', 'tsv', 'infer'}.")
         if file_format == 'infer':
             file_name_tokenized = file_path.split(".")
             for possible_extension in file_name_tokenized[::-1]:
-                if possible_extension in {"vcf", "csv", "tsv"}:
+                if possible_extension in SUPPORTED_FILE_FORMATS:
                     found_file_format = possible_extension
                     separator = self.delimiter_dictionary[possible_extension] if delimiter is None else delimiter
                     break
+
+            if found_file_format is None:
+                logging.warning("Could not infer the file type. Using tsv as the last resort.")
+                found_file_format = "tsv"
         else:
             found_file_format = file_format
             separator = self.delimiter_dictionary[file_format] if delimiter is None else delimiter
@@ -548,7 +553,7 @@ class DataReader:
         self.target_is_gonna_be_phased = target_is_gonna_be_phased_or_haps
         self.ref_file_extension, self.ref_separator = self.__find_file_extension(file_path, file_format, delimiter)
         if file_format == "infer":
-            print(f"Ref file format is {self.ref_file_extension} and Ref file sep is {self.ref_separator}.")
+            logging.info(f"Ref file format is {self.ref_file_extension} and Ref file sep is {self.ref_separator}.")
 
         self.reference_panel = self.__read_csv(file_path, is_reference=True, is_vcf=False, separator=self.ref_separator,
                                                first_column_is_index=first_column_is_index,
@@ -576,7 +581,7 @@ class DataReader:
                 "The reference contains unphased diploids while the target will be phased or haploid data. The model cannot predict the target at this rate.")
 
         self.VARIANT_COUNT = self.reference_panel.shape[0]
-        print(
+        logging.info(
             f"{self.reference_panel.shape[1] - (self.ref_sample_value_index - 1)} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
 
         self.is_phased = target_is_gonna_be_phased_or_haps and (self.ref_is_phased or self.ref_is_hap)
@@ -620,7 +625,7 @@ class DataReader:
             self.reverse_replacement_dict = {v: k for k, v in enumerate(self.replacement_dict)}
 
         self.SEQ_DEPTH = self.allele_count + 1 if self.is_phased else len(self.genotype_vals)
-        print("Done!")
+        logging.info("Done!")
 
     def assign_test_set(self, file_path,
                         variants_as_columns=False,
@@ -663,7 +668,7 @@ class DataReader:
             0, self.target_sample_value_index])
         is_phased = "|" in test_df.iloc[0, self.target_sample_value_index]
         test_var_count = test_df.shape[0]
-        print(f"{test_var_count} {'haplotype' if self.target_is_hap else 'diplotype'} variants found!")
+        logging.info(f"{test_var_count} {'haplotype' if self.target_is_hap else 'diplotype'} variants found!")
         if (self.target_is_hap or is_phased) and not (self.ref_is_phased or self.ref_is_hap):
             raise RuntimeError("The training set contains unphased data. The target must be unphased as well.")
         if self.ref_is_hap and not (self.target_is_hap or is_phased):
@@ -676,7 +681,7 @@ class DataReader:
         self.target_set = self.target_set.astype('str')
         self.target_set.fillna("." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
         self.target_set = self.target_set.astype('category')
-        print("Done!")
+        logging.info("Done!")
 
     def __map_hap_2_ind_parent_1(self, x) -> int:
         return self.hap_map[x.split('|')[0]]
@@ -708,7 +713,7 @@ class DataReader:
             return self.__get_forward_data(
                 data=self.reference_panel.iloc[starting_var_index:ending_var_index, self.ref_sample_value_index - 1:])
         else:
-            print("No variant indices provided or indices not valid, using the whole sequence...")
+            logging.info("No variant indices provided or indices not valid, using the whole sequence...")
             return self.__get_forward_data(data=self.reference_panel.iloc[:, self.ref_sample_value_index - 1:])
 
     def get_target_set(self, starting_var_index=0, ending_var_index=0) -> np.ndarray:
@@ -716,7 +721,7 @@ class DataReader:
             return self.__get_forward_data(
                 data=self.target_set.iloc[starting_var_index:ending_var_index, self.target_sample_value_index - 1:])
         else:
-            print("No variant indices provided or indices not valid, using the whole sequence...")
+            logging.info("No variant indices provided or indices not valid, using the whole sequence...")
             return self.__get_forward_data(data=self.target_set.iloc[:, self.target_sample_value_index - 1:])
 
     def __convert_genotypes_to_vcf(self, genotypes, pred_format="GT:DS:GP"):
@@ -807,29 +812,31 @@ class DataReader:
                 preds).T
         return target_df
 
-    def write_ligated_results_to_file(self, df: pd.DataFrame, file_name: str) -> None:
-        with gzip.open(file_name, 'wt') if file_name.endswith(".gz") else open(file_name, 'wt') as f_out:
+    def write_ligated_results_to_file(self, df: pd.DataFrame, file_name: str, compress=True) -> str:
+        to_write_format = self.ref_file_extension
+        with gzip.open(f"{file_name}.{to_write_format}.gz", 'wt') if compress else open(f"{file_name}.{to_write_format}", 'wt') as f_out:
             # write info
             if self.ref_file_extension == "vcf":
                 f_out.write("\n".join(self.__get_headers_for_output(contain_probs=False)) + "\n")
             else:  # Not the best idea?
                 f_out.write("\n".join(self.ref_n_header_lines))
-        df.to_csv(file_name, sep=self.ref_separator, mode='a', index=False)
+        dt.Frame(df).to_csv(f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}", sep=self.ref_separator, append=True)
+        return f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}"
 
 
 @tf.function()
-def add_attention_mask(X_sample, y_sample, depth, mr):
-    mask_size = tf.cast(X_sample.shape[0] * mr, dtype=tf.int32)
-    mask_idx = tf.reshape(tf.random.shuffle(tf.range(X_sample.shape[0]))[:mask_size], (-1, 1))
+def add_attention_mask(x_sample, y_sample, depth, mr):
+    mask_size = tf.cast(x_sample.shape[0] * mr, dtype=tf.int32)
+    mask_idx = tf.reshape(tf.random.shuffle(tf.range(x_sample.shape[0]))[:mask_size], (-1, 1))
     updates = tf.math.add(tf.zeros(shape=(mask_idx.shape[0]), dtype=tf.int32), depth - 1)
-    X_masked = tf.tensor_scatter_nd_update(X_sample, mask_idx, updates)
+    X_masked = tf.tensor_scatter_nd_update(x_sample, mask_idx, updates)
 
     return tf.one_hot(X_masked, depth), tf.one_hot(y_sample, depth - 1)
 
 
 @tf.function()
-def onehot_encode(X_sample, depth):
-    return tf.one_hot(X_sample, depth)
+def onehot_encode(x_sample, depth):
+    return tf.one_hot(x_sample, depth)
 
 
 def get_training_dataset(x, batch_size, depth,
@@ -853,9 +860,10 @@ def get_training_dataset(x, batch_size, depth,
 
     dataset = dataset.batch(batch_size, drop_remainder=True, num_parallel_calls=AUTO)
 
+    # This part is for multi-gpu servers
     options = tf.data.Options()
     options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
-    dataset = dataset.with_options(options)  # use this as input for your model
+    dataset = dataset.with_options(options)
     dataset = strategy.experimental_distribute_dataset(dataset)
 
     return dataset
@@ -872,17 +880,23 @@ def get_test_dataset(x, batch_size, depth):
 
     dataset = dataset.batch(batch_size, drop_remainder=False, num_parallel_calls=AUTO)
 
+    # This part is for multi-gpu servers
+    options = tf.data.Options()
+    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
+    dataset = dataset.with_options(options)
+    dataset = strategy.experimental_distribute_dataset(dataset)
+
     return dataset
 
 
 def create_directories(save_dir,
                        models_dir="models",
                        outputs="out") -> None:
-    for dir in [save_dir,
+    for dd in [save_dir,
                 f"{save_dir}/{models_dir}",
                 f"{save_dir}/{outputs}"]:
-        if not os.path.exists(dir):
-            os.makedirs(dir)
+        if not os.path.exists(dd):
+            os.makedirs(dd)
     pass
 
 
@@ -902,7 +916,7 @@ def load_chunk_info(save_dir, break_points):
         with open(f"{save_dir}/models/chunks_info.json", 'r') as f:
             loaded_chunks_info = json.load(f)
             if isinstance(loaded_chunks_info, dict) and len(loaded_chunks_info) == len(chunk_info):
-                print("Resuming the training...")
+                logging.info("Resuming the training...")
                 chunk_info = {int(k): v for k, v in loaded_chunks_info.items()}
     return chunk_info
 
@@ -944,15 +958,15 @@ def train_the_model(args) -> None:
     chunks_done = load_chunk_info(args.save_dir, break_points)
     for w in range(len(break_points) - 1):
         if chunks_done[w]:
-            print(f"Skipping part {w + 1} out of {len(break_points) - 1} due to previous training.")
+            logging.info(f"Skipping part {w + 1} out of {len(break_points) - 1} due to previous training.")
             continue
-        print(f"Doing part {w + 1} out of {len(break_points) - 1}")
+        logging.info(f"Training on chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
         offset_before = break_points[w] - final_start_pos
         offset_after = final_end_pos - break_points[w + 1]
         ref_set = dr.get_ref_set(final_start_pos, final_end_pos).astype(np.int32)
-        print(f"Data shape: {ref_set.shape}")
+        logging.info(f"Data shape: {ref_set.shape}")
         train_dataset = get_training_dataset(ref_set[x_train_indices], BATCH_SIZE,
                                              depth=dr.SEQ_DEPTH,
                                              offset_before=offset_before,
@@ -985,12 +999,13 @@ def train_the_model(args) -> None:
                                 callbacks=callbacks, verbose=1)
             chunks_done[w] = True
             save_chunk_status(args.save_dir, chunks_done)
+    pass
 
 
 def impute_the_target(args):
     if args.target is None:
         raise argparse.ArgumentError(
-            message="Target file missing for imputation. use -target to specify a target file.")
+            message="Target file missing for imputation. use --target to specify a target file.")
 
     dr = DataReader()
     dr.assign_training_set(file_path=args.ref,
@@ -1006,7 +1021,47 @@ def impute_the_target(args):
                        file_format=args.target_file_format,
                        first_column_is_index=args.target_fcai,
                        comments=args.target_comment)
-    pass
+
+    with open(f"{args.save_dir}/commandline_args.json", 'r') as f:
+        training_args = json.load(f)
+    BATCH_SIZE = args.batch_size_per_gpu * N_REPLICAS
+    # Ensure that sites-per-model is matched to the one used for training
+    args.sites_per_model = training_args["sites_per_model"]
+
+    all_preds = []
+    break_points = list(np.arange(0, dr.VARIANT_COUNT, args.sites_per_model)) + [dr.VARIANT_COUNT]
+    for w in range(len(break_points) - 1):
+        logging.info(f"Imputing chunk {w + 1}/{len(break_points) - 1}")
+        final_start_pos = max(0, break_points[w] - 2 * args.co)
+        final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
+        offset_before = break_points[w] - final_start_pos
+        offset_after = final_end_pos - break_points[w + 1]
+
+        K.clear_session()
+        callbacks = create_callbacks(save_path=f"{args.save_dir}/models/w_{w}")
+        model_args = {
+            "embedding_dim": args.embed_dim,
+            "num_heads": args.na_heads,
+            "chunk_size": args.cs,
+            "chunk_overlap": args.co,
+            "in_channel": dr.SEQ_DEPTH,
+            "offset_before": offset_before,
+            "offset_after": offset_after,
+            "lr": args.lr
+        }
+        with strategy.scope():
+            model = create_model(model_args)
+            latest = tf.train.latest_checkpoint(f"{args.save_dir}/models/w_{w}")
+            model.load_weights(latest)
+            test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
+            test_dataset = get_test_dataset(test_dataset_np, BATCH_SIZE, depth=dr.SEQ_DEPTH)
+            predict_onehot = model.predict(test_dataset, verbose=1)
+            all_preds.append(predict_onehot.astype(np.float32))
+    all_preds = np.hstack(all_preds)
+    destination_file_path = dr.write_ligated_results_to_file(dr.preds_to_genotypes(all_preds),
+                                     f"{args.save_dir}/out/ligated_results",
+                                     compress=args.compress_results)
+    logging.info(f"Done! Please find the file at {destination_file_path}")
 
 
 def str_to_bool(s):
@@ -1085,16 +1140,19 @@ def main():
     parser.add_argument('--ref-file-format', type=str, required=False,
                         help='Reference file format: infer | vcf | csv | tsv. Default is infer.',
                         default="infer",
-                        choices=['infer', 'vcf', 'csv', 'tsv'])
+                        choices=['infer'] + list(SUPPORTED_FILE_FORMATS))
     parser.add_argument('--target-file-format', type=str, required=False,
                         help='Target file format: infer | vcf | csv | tsv. Default is infer.',
                         default="infer",
-                        choices=['infer', 'vcf', 'csv', 'tsv'])
+                        choices=['infer'] + list(SUPPORTED_FILE_FORMATS))
 
     ## save args
     parser.add_argument('--save-dir', type=str, required=True, help='the path to save the results and the model.\n'
                                                                     'This path is also used to load a trained model for imputation.')
-
+    parser.add_argument('--compress-results', type=str, required=False,
+                        help='Default: true',
+                        default='1',
+                        choices=['false', 'true', '0', '1'])
     ## Chunking args
     parser.add_argument('--co', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)',
                         default=100)
@@ -1130,7 +1188,7 @@ def main():
 
     if not (args.save_dir.startswith("./") or args.save_dir.startswith("/")):
         args.save_dir = f"./{args.save_dir}"
-    print("Save directory will be:", args.save_dir)
+    logging.info("Save directory will be:", args.save_dir)
 
     if args.mode == 'train':
         train_the_model(args)

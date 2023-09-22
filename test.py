@@ -24,4 +24,6 @@ if __name__ == '__main__':
                         choices=['false', 'true', '0', '1'], default='0')
     args = parser.parse_args()
     args.restart_training = str_to_bool(args.restart_training)
+    with open(f"{args.save_dir}/commandline_args.json", 'w') as f:
+        json.dump(args.__dict__, f, indent=4)
     print(args.restart_training)
