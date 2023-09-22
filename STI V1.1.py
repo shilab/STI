@@ -1,5 +1,6 @@
 import os, sys, shutil, gzip, argparse
 import logging
+from icecream import ic
 from tqdm import tqdm
 import numpy as np
 from typing import Union
@@ -24,10 +25,26 @@ from scipy.spatial.distance import squareform
 import datatable as dt
 import json
 
-logging.info("Tensorflow version " + tf.__version__)
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    OKCYAN = '\033[96m'
+    OKGREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+def pprint(text):
+    print(f"{bcolors.OKGREEN}{text}{bcolors.ENDC}")
+
+logging.basicConfig(level = logging.WARNING)
+pprint("Tensorflow version " + tf.__version__)
 strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.ReductionToOneDevice())
 N_REPLICAS = strategy.num_replicas_in_sync
-logging.info(f"Num gpus to be used: {N_REPLICAS}")
+pprint(f"Num gpus to be used: {N_REPLICAS}")
 SUPPORTED_FILE_FORMATS = {"vcf", "csv", "tsv"}
 
 ## Custom Layers
@@ -482,7 +499,7 @@ class DataReader:
         HG1023               1
         HG1024               0
         """
-        logging.info("Reading the file...")
+        pprint("Reading the file...")
         data_header = None
         path_sep = "/" if "/" in file_path else os.path.sep
         line_counter = 0
@@ -553,7 +570,7 @@ class DataReader:
         self.target_is_gonna_be_phased = target_is_gonna_be_phased_or_haps
         self.ref_file_extension, self.ref_separator = self.__find_file_extension(file_path, file_format, delimiter)
         if file_format == "infer":
-            logging.info(f"Ref file format is {self.ref_file_extension} and Ref file sep is {self.ref_separator}.")
+            pprint(f"Ref file format is {self.ref_file_extension} and Ref file sep is {self.ref_separator}.")
 
         self.reference_panel = self.__read_csv(file_path, is_reference=True, is_vcf=False, separator=self.ref_separator,
                                                first_column_is_index=first_column_is_index,
@@ -581,7 +598,7 @@ class DataReader:
                 "The reference contains unphased diploids while the target will be phased or haploid data. The model cannot predict the target at this rate.")
 
         self.VARIANT_COUNT = self.reference_panel.shape[0]
-        logging.info(
+        pprint(
             f"{self.reference_panel.shape[1] - (self.ref_sample_value_index - 1)} {'haploid' if self.ref_is_hap else 'diploid'} samples with {self.VARIANT_COUNT} variants found!")
 
         self.is_phased = target_is_gonna_be_phased_or_haps and (self.ref_is_phased or self.ref_is_hap)
@@ -625,7 +642,7 @@ class DataReader:
             self.reverse_replacement_dict = {v: k for k, v in enumerate(self.replacement_dict)}
 
         self.SEQ_DEPTH = self.allele_count + 1 if self.is_phased else len(self.genotype_vals)
-        logging.info("Done!")
+        pprint("Done!")
 
     def assign_test_set(self, file_path,
                         variants_as_columns=False,
@@ -668,7 +685,7 @@ class DataReader:
             0, self.target_sample_value_index])
         is_phased = "|" in test_df.iloc[0, self.target_sample_value_index]
         test_var_count = test_df.shape[0]
-        logging.info(f"{test_var_count} {'haplotype' if self.target_is_hap else 'diplotype'} variants found!")
+        pprint(f"{test_var_count} {'haplotype' if self.target_is_hap else 'diplotype'} variants found!")
         if (self.target_is_hap or is_phased) and not (self.ref_is_phased or self.ref_is_hap):
             raise RuntimeError("The training set contains unphased data. The target must be unphased as well.")
         if self.ref_is_hap and not (self.target_is_hap or is_phased):
@@ -681,7 +698,7 @@ class DataReader:
         self.target_set = self.target_set.astype('str')
         self.target_set.fillna("." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
         self.target_set = self.target_set.astype('category')
-        logging.info("Done!")
+        pprint("Done!")
 
     def __map_hap_2_ind_parent_1(self, x) -> int:
         return self.hap_map[x.split('|')[0]]
@@ -713,7 +730,7 @@ class DataReader:
             return self.__get_forward_data(
                 data=self.reference_panel.iloc[starting_var_index:ending_var_index, self.ref_sample_value_index - 1:])
         else:
-            logging.info("No variant indices provided or indices not valid, using the whole sequence...")
+            pprint("No variant indices provided or indices not valid, using the whole sequence...")
             return self.__get_forward_data(data=self.reference_panel.iloc[:, self.ref_sample_value_index - 1:])
 
     def get_target_set(self, starting_var_index=0, ending_var_index=0) -> np.ndarray:
@@ -721,7 +738,7 @@ class DataReader:
             return self.__get_forward_data(
                 data=self.target_set.iloc[starting_var_index:ending_var_index, self.target_sample_value_index - 1:])
         else:
-            logging.info("No variant indices provided or indices not valid, using the whole sequence...")
+            pprint("No variant indices provided or indices not valid, using the whole sequence...")
             return self.__get_forward_data(data=self.target_set.iloc[:, self.target_sample_value_index - 1:])
 
     def __convert_genotypes_to_vcf(self, genotypes, pred_format="GT:DS:GP"):
@@ -916,7 +933,7 @@ def load_chunk_info(save_dir, break_points):
         with open(f"{save_dir}/models/chunks_info.json", 'r') as f:
             loaded_chunks_info = json.load(f)
             if isinstance(loaded_chunks_info, dict) and len(loaded_chunks_info) == len(chunk_info):
-                logging.info("Resuming the training...")
+                pprint("Resuming the training...")
                 chunk_info = {int(k): v for k, v in loaded_chunks_info.items()}
     return chunk_info
 
@@ -958,15 +975,15 @@ def train_the_model(args) -> None:
     chunks_done = load_chunk_info(args.save_dir, break_points)
     for w in range(len(break_points) - 1):
         if chunks_done[w]:
-            logging.info(f"Skipping part {w + 1} out of {len(break_points) - 1} due to previous training.")
+            pprint(f"Skipping chunk {w + 1}/{len(break_points) - 1} due to previous training.")
             continue
-        logging.info(f"Training on chunk {w + 1}/{len(break_points) - 1}")
+        pprint(f"Training on chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
         offset_before = break_points[w] - final_start_pos
         offset_after = final_end_pos - break_points[w + 1]
         ref_set = dr.get_ref_set(final_start_pos, final_end_pos).astype(np.int32)
-        logging.info(f"Data shape: {ref_set.shape}")
+        pprint(f"Data shape: {ref_set.shape}")
         train_dataset = get_training_dataset(ref_set[x_train_indices], BATCH_SIZE,
                                              depth=dr.SEQ_DEPTH,
                                              offset_before=offset_before,
@@ -1031,7 +1048,7 @@ def impute_the_target(args):
     all_preds = []
     break_points = list(np.arange(0, dr.VARIANT_COUNT, args.sites_per_model)) + [dr.VARIANT_COUNT]
     for w in range(len(break_points) - 1):
-        logging.info(f"Imputing chunk {w + 1}/{len(break_points) - 1}")
+        pprint(f"Imputing chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
         offset_before = break_points[w] - final_start_pos
@@ -1061,7 +1078,7 @@ def impute_the_target(args):
     destination_file_path = dr.write_ligated_results_to_file(dr.preds_to_genotypes(all_preds),
                                      f"{args.save_dir}/out/ligated_results",
                                      compress=args.compress_results)
-    logging.info(f"Done! Please find the file at {destination_file_path}")
+    pprint(f"Done! Please find the file at {destination_file_path}")
 
 
 def str_to_bool(s):
@@ -1188,7 +1205,7 @@ def main():
 
     if not (args.save_dir.startswith("./") or args.save_dir.startswith("/")):
         args.save_dir = f"./{args.save_dir}"
-    logging.info("Save directory will be:", args.save_dir)
+    pprint(f"Save directory will be:\t{args.save_dir}")
 
     if args.mode == 'train':
         train_the_model(args)
