@@ -1121,8 +1121,6 @@ def main():
                         default=4)
 
     args = parser.parse_args()
-
-    # Convert to boolean arguments
     args.restart_training = str_to_bool(args.restart_training)
     args.tihp = str_to_bool(args.tihp)
     args.ref_vac = str_to_bool(args.ref_vac)
