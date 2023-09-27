@@ -154,6 +154,7 @@ python3 STIv1.1_beta.py --mode ...
 - [x] Add a single script to handle haploids/diploids
 - [x] Add GPU(and HPC) support
 - [x] Unify the scripts for sporadic missingness imputation and variant imputation
+- [ ] Add support for .yaml file as an alternative to command-line arguments
 
 ***Please note that the code is under development and you might run into bugs. Feel free to open issues in github to address them.***
 
