@@ -137,7 +137,7 @@ Miniconda >= 3.3
 The code is adjusted to use all available GPUs. If you do not want that to happen, use the following command before running the code to prohibit using all GPUs:
 `export CUDA_VISIBLE_DEVICES=[comma separated GPU IDs, e,g,. 0,1]`
 
-Install requirment dependents
+Install required dependencies:
 ```
 conda create --name <env> --file requirements.txt
 ```
