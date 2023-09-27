@@ -1,7 +1,7 @@
 # STI
 Split Transformer Impute source code
 
-***Please refer to hpc branch if you intend to run the code on an hpc server (or any multi-gpu system).***
+***Please refer to hpc branch if you intend to run the code on a hpc server (or any multi-gpu system).***
 
 ## Model architecture
 
