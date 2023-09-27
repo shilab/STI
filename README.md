@@ -103,7 +103,7 @@ In order to use STI on a server, you can use `STI V1.1_beta.py` script to train 
   --co CO               Chunk overlap in terms of SNPs/SVs(default 100)
   --cs CS               Chunk size in terms of SNPs/SVs(default 2000)
   --sites-per-model SITES_PER_MODEL
-                        Number of SNPs/SVs used per model(default 30000)
+                        Number of SNPs/SVs used per model(default 16000)
   --mr MR               Masking rate(default 0.8)
   --val-frac VAL_FRAC   Fraction of reference samples to be used for validation (default=0.1).
   --random-seed RANDOM_SEED

@@ -970,6 +970,7 @@ class DataReader:
             self.target_set[self.reference_panel.columns[:9]] = self.reference_panel[self.reference_panel.columns[:9]]
         self.target_set = self.target_set.astype('str')
         self.target_set.fillna("." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
+        self.target_set.replace("nan", "." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
         self.target_set = self.target_set.astype('category')
         pprint("Done!")
 
@@ -1292,7 +1293,7 @@ def train_the_model(args) -> None:
         with strategy.scope():
             model = create_model(model_args)
             history = model.fit(train_dataset, steps_per_epoch=steps_per_epoch,
-                                epochs=1,
+                                epochs=NUM_EPOCHS,
                                 validation_data=valid_dataset,
                                 validation_steps=validation_steps,
                                 callbacks=callbacks, verbose=1)
@@ -1473,7 +1474,7 @@ def main():
     parser.add_argument('--cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)',
                         default=2000)
     parser.add_argument('--sites-per-model', type=int, required=False,
-                        help='Number of SNPs/SVs used per model(default 30000)', default=30000)
+                        help='Number of SNPs/SVs used per model(default 16000)', default=16000)
 
     ## Model (hyper-)params
     parser.add_argument('--mr', type=float, required=False, help='Masking rate(default 0.8)', default=0.8)
