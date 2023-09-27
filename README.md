@@ -62,7 +62,8 @@ Please note that variant IDs should be unique for the code to work correctly.
 ## General usage in HPC servers:
 In order to use STI on a server, you can use `STI V1.1_beta.py` script to train the model(s) and impute the data for sporadic and missing variants cases. Generally, we recommend to use a minimum masking rate of 0.5 and increasing it up to 0.8 accordingly if the missing rate of the target dataset is higher. The list of command line arguments used for `STI V1.1_beta.py` is as follows:
 
-`--mode {impute,train}
+```
+--mode {impute,train}
                         Operation mode: impute | train (default=train)
   --restart-training {false,true,0,1}
                         Whether to clean previously saved models in target directory and restart the training
@@ -114,7 +115,8 @@ In order to use STI on a server, you can use `STI V1.1_beta.py` script to train 
                         Embedding dimension size (default 128)
   --lr LR               Learning Rate (default 0.001)
   --batch-size-per-gpu BATCH_SIZE_PER_GPU
-                        Batch size per gpu(default 2)`
+                        Batch size per gpu(default 2)
+```
 
 - To train a model, you need a minimum of arguments in the following command:
   `python3 STI\ V1.1_beta.py --mode train --ref [reference/training file] --tihp [0 | 1] --save-dir [saving directory]`
