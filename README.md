@@ -113,9 +113,10 @@ jupyter-lab
 ```
 
 ## Roadmap
-- Add a single script to handle haploids/diploids
-- Add GPU(and HPC) support
-- Unify the scripts for sporadic missingness imputation and variant imputation
+- [x] Add a single script to handle haploids/diploids
+- [x] Add GPU(and HPC) support
+- [x] Unify the scripts for sporadic missingness imputation and variant imputation
+The above features are available in the script provided in **hpc** branch.
 
 ## Contact
 You can reach out to us regarding your questions , suggestions, and possible collaboration using either of these emails:
