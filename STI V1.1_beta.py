@@ -794,7 +794,7 @@ class DataReader:
             raise IOError("The file only contains comments!")
         df = dt.fread(file=file_path,
                       sep=separator, header=True, skip_to_line=line_counter + 1)
-        df = df.to_pandas().astype('category')
+        df = df.to_pandas()#.astype('category')
         if first_column_is_index:
             df.set_index(df.columns[0], inplace=True)
         return df
@@ -971,7 +971,7 @@ class DataReader:
         self.target_set = self.target_set.astype('str')
         self.target_set.fillna("." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
         self.target_set.replace("nan", "." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
-        self.target_set = self.target_set.astype('category')
+        # self.target_set = self.target_set.astype('category') # Was causing random bugs!
         pprint("Done!")
 
     def __map_hap_2_ind_parent_1(self, x) -> int:
@@ -1033,7 +1033,7 @@ class DataReader:
             raise ValueError("Number of haploids should be even.")
 
         n_samples = n_haploids // 2
-        genotypes = np.zeros((n_samples, n_variants), dtype=object)
+        genotypes = np.empty((n_samples, n_variants), dtype=object)
 
         for i in tqdm(range(n_samples)):
             # haploid_1 = allele_probs_normalized[2 * i]
@@ -1341,30 +1341,13 @@ def impute_the_target(args):
         pprint(f"Imputing chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
-        offset_before = break_points[w] - final_start_pos
-        offset_after = final_end_pos - break_points[w + 1]
 
         K.clear_session()
-        model_args = {
-            "embedding_dim": args.embed_dim,
-            "num_heads": args.na_heads,
-            "chunk_size": args.cs,
-            "chunk_overlap": args.co,
-            "in_channel": dr.SEQ_DEPTH,
-            "offset_before": offset_before,
-            "offset_after": offset_after,
-            "lr": args.lr
-        }
-        # with strategy.scope():
-        # model = create_model(model_args)
-        # latest = tf.train.latest_checkpoint(f"{args.save_dir}/models/w_{w}")
-        # model.load_weights(latest)
         model = tf.keras.models.load_model(
             f"{args.save_dir}/models/w_{w}.ckpt",
             custom_objects=custom_objects,
             compile=False
         )
-        # model = tf.saved_model.load(f"{args.save_dir}/models/w_{w}.keras")
         test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
         test_dataset = get_test_dataset(test_dataset_np, BATCH_SIZE, depth=dr.SEQ_DEPTH)
         predict_onehot = model.predict(test_dataset, verbose=1)
