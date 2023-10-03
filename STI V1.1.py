@@ -1,4 +1,4 @@
-import os, sys, shutil, gzip, argparse
+import os, sys, shutil, gzip, argparse, math
 import logging
 from icecream import ic
 from tqdm import tqdm
@@ -37,30 +37,33 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+
 def pprint(text):
     print(f"{bcolors.OKGREEN}{text}{bcolors.ENDC}")
 
-logging.basicConfig(level = logging.WARNING)
+
+logging.basicConfig(level=logging.WARNING)
 pprint("Tensorflow version " + tf.__version__)
-strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.ReductionToOneDevice())
-N_REPLICAS = strategy.num_replicas_in_sync
-pprint(f"Num gpus to be used: {N_REPLICAS}")
+
 SUPPORTED_FILE_FORMATS = {"vcf", "csv", "tsv"}
+keras.saving.get_custom_objects().clear()
+
 
 ## Custom Layers
+@keras.saving.register_keras_serializable(package="MyLayers")
 class CrossAttentionLayer(layers.Layer):
     def __init__(self, local_dim, global_dim,
                  start_offset=0, end_offset=0,
                  activation=tf.nn.gelu, dropout_rate=0.1,
-                 n_heads=8):
-        super(CrossAttentionLayer, self).__init__()
+                 n_heads=8, **kwargs):
+        super(CrossAttentionLayer, self).__init__(**kwargs)
         self.local_dim = local_dim
         self.global_dim = global_dim
         self.dropout_rate = dropout_rate
         self.activation = activation
         self.start_offset = start_offset
         self.end_offset = end_offset
-        self.num_heads = n_heads
+        self.n_heads = n_heads
         self.layer_norm00 = layers.LayerNormalization()
         self.layer_norm01 = layers.LayerNormalization()
         self.layer_norm1 = layers.LayerNormalization()
@@ -74,8 +77,51 @@ class CrossAttentionLayer(layers.Layer):
         )
         self.add0 = layers.Add()
         self.add1 = layers.Add()
-        self.attention = layers.MultiHeadAttention(num_heads=self.num_heads,
+        self.attention = layers.MultiHeadAttention(num_heads=self.n_heads,
                                                    key_dim=self.local_dim)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "local_dim": self.local_dim,
+                "global_dim": self.global_dim,
+                "start_offset": self.start_offset,
+                "end_offset": self.end_offset,
+                "activation": self.activation,
+                "dropout_rate": self.dropout_rate,
+                "n_heads": self.n_heads,
+
+                "layer_norm00": self.layer_norm00,
+                "layer_norm01": self.layer_norm01,
+                "layer_norm1": self.layer_norm1,
+                "ffn": self.ffn,
+                "add0": self.add0,
+                "add1": self.add1,
+                "attention": self.attention,
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["local_dim"] = keras.layers.deserialize(config["local_dim"])
+    #     config["global_dim"] = keras.layers.deserialize(config["global_dim"])
+    #     config["start_offset"] = keras.layers.deserialize(config["start_offset"])
+    #     config["end_offset"] = keras.layers.deserialize(config["end_offset"])
+    #     config["activation"] = keras.layers.deserialize(config["activation"])
+    #     config["dropout_rate"] = keras.layers.deserialize(config["dropout_rate"])
+    #     config["n_heads"] = keras.layers.deserialize(config["n_heads"])
+
+    #     config["layer_norm00"] = keras.layers.deserialize(config["layer_norm00"])
+    #     config["layer_norm01"] = keras.layers.deserialize(config["layer_norm01"])
+    #     config["layer_norm1"] = keras.layers.deserialize(config["layer_norm1"])
+    #     config["ffn"] = keras.layers.deserialize(config["ffn"])
+    #     config["add0"] = keras.layers.deserialize(config["add0"])
+    #     config["add1"] = keras.layers.deserialize(config["add1"])
+    #     config["attention"] = keras.layers.deserialize(config["attention"])
+    #     return cls(**config)
 
     def call(self, inputs, training):
         local_repr = self.layer_norm00(inputs[0])
@@ -100,10 +146,11 @@ class CrossAttentionLayer(layers.Layer):
         return outputs
 
 
+@keras.saving.register_keras_serializable(package="MyLayers")
 class MaskedTransformerBlock(layers.Layer):
     def __init__(self, embed_dim, num_heads, ff_dim, attention_range, start_offset=0, end_offset=0,
-                 attn_block_repeats=1, activation=tf.nn.gelu, dropout_rate=0.1, use_ffn=True):
-        super(MaskedTransformerBlock, self).__init__()
+                 attn_block_repeats=1, activation=tf.nn.gelu, dropout_rate=0.1, use_ffn=True, **kwargs):
+        super(MaskedTransformerBlock, self).__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.ff_dim = ff_dim
@@ -114,65 +161,88 @@ class MaskedTransformerBlock(layers.Layer):
         self.activation = activation
         self.dropout_rate = dropout_rate
         self.use_ffn = use_ffn
-        self.att0 = [layers.MultiHeadAttention(num_heads=self.num_heads,
-                                               key_dim=self.embed_dim) for _ in range(attn_block_repeats)]
+        self.att0 = layers.MultiHeadAttention(num_heads=self.num_heads,
+                                              key_dim=self.embed_dim)
         if self.use_ffn:
-            self.ffn = [tf.keras.Sequential(
+            self.ffn = tf.keras.Sequential(
                 [
                     layers.Dense(self.ff_dim, activation=self.activation,
                                  ),
                     layers.Dense(self.embed_dim,
                                  activation=self.activation,
                                  ), ]
-            ) for _ in range(attn_block_repeats)]
-        self.layer_norm0 = [layers.LayerNormalization() for _ in range(attn_block_repeats)]
-        self.layer_norm1 = [layers.LayerNormalization() for _ in range(attn_block_repeats)]
+            )
+        self.layer_norm0 = layers.LayerNormalization()
+        self.layer_norm1 = layers.LayerNormalization()
 
-    def build(self, input_shape):
-        assert (self.end_offset >= 0)
-        self.feature_size = input_shape[1]
-        attention_mask = np.zeros((self.feature_size,
-                                   self.feature_size), dtype=bool)
-        for i in range(self.start_offset, self.feature_size - self.end_offset):
-            attention_indices = np.arange(max(0, i - self.attention_range),
-                                          min(self.feature_size, i + self.attention_range))
-            attention_mask[i, attention_indices] = True
-        self.attention_mask = tf.constant(attention_mask[self.start_offset:self.feature_size - self.end_offset])
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "ff_dim": self.ff_dim,
+                "attention_range": self.attention_range,
+                "start_offset": self.start_offset,
+                "end_offset": self.end_offset,
+                "attn_block_repeats": self.attn_block_repeats,
+                "activation": self.activation,
+                "dropout_rate": self.dropout_rate,
+                "use_ffn": self.use_ffn,
+
+                "ffn": self.ffn,
+                "att0": self.att0,
+                "layer_norm0": self.layer_norm0,
+                "layer_norm1": self.layer_norm1,
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["embed_dim"] = keras.layers.deserialize(config["embed_dim"])
+    #     config["num_heads"] = keras.layers.deserialize(config["num_heads"])
+    #     config["ff_dim"] = keras.layers.deserialize(config["ff_dim"])
+    #     config["attention_range"] = keras.layers.deserialize(config["attention_range"])
+    #     config["start_offset"] = keras.layers.deserialize(config["start_offset"])
+    #     config["end_offset"] = keras.layers.deserialize(config["end_offset"])
+    #     config["attn_block_repeats"] = keras.layers.deserialize(config["attn_block_repeats"])
+    #     config["activation"] = keras.layers.deserialize(config["activation"])
+    #     config["dropout_rate"] = keras.layers.deserialize(config["dropout_rate"])
+    #     config["use_ffn"] = keras.layers.deserialize(config["use_ffn"])
+
+    #     config["feature_size"] = keras.layers.deserialize(config["feature_size"])
+    #     config["attention_mask"] = keras.layers.deserialize(config["attention_mask"])
+
+    #     config["ffn"] = keras.layers.deserialize(config["ffn"])
+    #     config["att0"] = keras.layers.deserialize(config["att0"])
+    #     config["layer_norm0"] = keras.layers.deserialize(config["layer_norm0"])
+    #     config["layer_norm1"] = keras.layers.deserialize(config["layer_norm1"])
+    #     return cls(**config)
 
     def call(self, inputs, training):
-
-        x = inputs
-        for i in range(self.attn_block_repeats - 1):
-            x = self.layer_norm0[i](x)
-            attn_output = self.att0[i](x, x)
-            out1 = x + attn_output
-            out1 = self.layer_norm1[i](out1)
-            if self.use_ffn:
-                ffn_output = self.ffn[i](out1)
-                x = out1 + ffn_output
-            else:
-                x = out1
-
-        x = self.layer_norm0[-1](inputs)
-        attn_output = self.att0[-1](x[:, self.start_offset:x.shape[1] - self.end_offset, :], x,
-                                    )
+        x = self.layer_norm0(inputs)
+        attn_output = self.att0(x[:, self.start_offset:x.shape[1] - self.end_offset, :], x,
+                                )
         out1 = x[:, self.start_offset:x.shape[1] - self.end_offset, :] + attn_output
-        out1 = self.layer_norm1[-1](out1)
+        out1 = self.layer_norm1(out1)
         if self.use_ffn:
-            ffn_output = self.ffn[-1](out1)
+            ffn_output = self.ffn(out1)
             x = out1 + ffn_output
         else:
             x = out1
         return x
 
 
-class GenoEmbeddings(layers.Layer):
+@keras.saving.register_keras_serializable(package="MyLayers")
+class CatEmbeddings(layers.Layer):
     def __init__(self, embedding_dim,
                  embeddings_initializer='glorot_uniform',
                  embeddings_regularizer=None,
                  activity_regularizer=None,
-                 embeddings_constraint=None):
-        super(GenoEmbeddings, self).__init__()
+                 embeddings_constraint=None, **kwargs):
+        super(CatEmbeddings, self).__init__(**kwargs)
         self.embedding_dim = embedding_dim
         self.embeddings_initializer = initializers.get(embeddings_initializer)
         self.embeddings_regularizer = regularizers.get(embeddings_regularizer)
@@ -188,25 +258,64 @@ class GenoEmbeddings(layers.Layer):
         self.embedding = self.add_weight(
             shape=(self.num_of_allels, self.embedding_dim),
             initializer=self.embeddings_initializer,
-            trainable=True, name='geno_embeddings',
+            trainable=True, name='cat_embeddings',
             regularizer=self.embeddings_regularizer,
             constraint=self.embeddings_constraint,
             experimental_autocast=False
         )
         self.positions = tf.range(start=0, limit=self.n_snps, delta=1)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "embedding_dim": self.embedding_dim,
+                "embeddings_initializer": self.embeddings_initializer,
+                "embeddings_regularizer": self.embeddings_regularizer,
+                "activity_regularizer": self.activity_regularizer,
+                "embeddings_constraint": self.embeddings_constraint,
+                "position_embedding": self.position_embedding,
+                "embeddings_constraint": self.embeddings_constraint,
+
+                "num_of_allels": self.num_of_allels,
+                "n_snps": self.n_snps,
+
+                # "embedding": self.embedding,
+                "positions": self.positions.numpy(),
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["embedding_dim"] = keras.layers.deserialize(config["embedding_dim"])
+    #     config["embeddings_initializer"] = keras.layers.deserialize(config["embeddings_initializer"])
+    #     config["embeddings_regularizer"] = keras.layers.deserialize(config["embeddings_regularizer"])
+    #     config["activity_regularizer"] = keras.layers.deserialize(config["activity_regularizer"])
+    #     config["embeddings_constraint"] = keras.layers.deserialize(config["embeddings_constraint"])
+    #     config["position_embedding"] = keras.layers.deserialize(config["position_embedding"])
+    #     config["num_of_allels"] = keras.layers.deserialize(config["num_of_allels"])
+    #     config["n_snps"] = keras.layers.deserialize(config["n_snps"])
+    #     # config["embedding"] = keras.layers.deserialize(config["embedding"])
+    #     config["positions"] = keras.layers.deserialize(config["positions"])
+    #     return cls(**config)
+
     def call(self, inputs):
         self.immediate_result = tf.einsum('ijk,kl->ijl', inputs, self.embedding)
         return self.immediate_result + self.position_embedding(self.positions)
 
 
+@keras.saving.register_keras_serializable(package="MyLayers")
 class SelfAttnChunk(layers.Layer):
     def __init__(self, embed_dim, num_heads, ff_dim, attention_range,
                  start_offset=0, end_offset=0,
                  attn_block_repeats=1,
-                 include_embedding_layer=False):
-        super(SelfAttnChunk, self).__init__()
+                 include_embedding_layer=False, **kwargs):
+        super(SelfAttnChunk, self).__init__(**kwargs)
         self.attention_range = attention_range
+        self.start_offset = start_offset
+        self.end_offset = end_offset
         self.ff_dim = ff_dim
         self.num_heads = num_heads
         self.embed_dim = embed_dim
@@ -217,24 +326,55 @@ class SelfAttnChunk(layers.Layer):
                                                       self.num_heads, self.ff_dim,
                                                       attention_range, start_offset,
                                                       end_offset, attn_block_repeats=1)
-        if include_embedding_layer:
-            self.embedding = GenoEmbeddings(embed_dim)
+        # if include_embedding_layer:
+        #     self.embedding = GenoEmbeddings(embed_dim)
 
-    def build(self, input_shape):
-        pass
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "ff_dim": self.ff_dim,
+                "attention_range": self.attention_range,
+                "start_offset": self.start_offset,
+                "end_offset": self.end_offset,
+                "attn_block_repeats": self.attn_block_repeats,
+                "include_embedding_layer": self.include_embedding_layer,
+
+                "attention_block": self.attention_block,
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["embed_dim"] = keras.layers.deserialize(config["embed_dim"])
+    #     config["num_heads"] = keras.layers.deserialize(config["num_heads"])
+    #     config["ff_dim"] = keras.layers.deserialize(config["ff_dim"])
+    #     config["attention_range"] = keras.layers.deserialize(config["attention_range"])
+    #     config["start_offset"] = keras.layers.deserialize(config["start_offset"])
+    #     config["end_offset"] = keras.layers.deserialize(config["end_offset"])
+    #     config["attn_block_repeats"] = keras.layers.deserialize(config["attn_block_repeats"])
+    #     config["include_embedding_layer"] = keras.layers.deserialize(config["include_embedding_layer"])
+
+    #     config["attention_block"] = keras.layers.deserialize(config["attention_block"])
+    #     return cls(**config)
 
     def call(self, inputs, training):
-        if self.include_embedding_layer:
-            x = self.embedding(inputs)
-        else:
-            x = inputs
+        # if self.include_embedding_layer:
+        #     x = self.embedding(inputs)
+        # else:
+        x = inputs
         x = self.attention_block(x)
         return x
 
 
+@keras.saving.register_keras_serializable(package="MyLayers")
 class CrossAttnChunk(layers.Layer):
-    def __init__(self, start_offset=0, end_offset=0, n_heads=8):
-        super(CrossAttnChunk, self).__init__()
+    def __init__(self, start_offset=0, end_offset=0, n_heads=8, **kwargs):
+        super(CrossAttnChunk, self).__init__(**kwargs)
         self.start_offset = start_offset
         self.end_offset = end_offset
         self.n_heads = n_heads
@@ -247,15 +387,43 @@ class CrossAttnChunk(layers.Layer):
                                                    n_heads=self.n_heads)
         pass
 
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "start_offset": self.start_offset,
+                "end_offset": self.end_offset,
+                "n_heads": self.n_heads,
+                "local_dim": self.local_dim,
+                "global_dim": self.global_dim,
+
+                "attention_block": self.attention_block,
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["start_offset"] = keras.layers.deserialize(config["start_offset"])
+    #     config["end_offset"] = keras.layers.deserialize(config["end_offset"])
+    #     config["n_heads"] = keras.layers.deserialize(config["n_heads"])
+    #     config["local_dim"] = keras.layers.deserialize(config["local_dim"])
+    #     config["global_dim"] = keras.layers.deserialize(config["global_dim"])
+
+    #     config["attention_block"] = keras.layers.deserialize(config["attention_block"])
+    #     return cls(**config)
+
     def call(self, inputs, training):
         x = inputs
         x = self.attention_block(x)
         return x
 
 
+@keras.saving.register_keras_serializable(package="MyLayers")
 class ConvBlock(layers.Layer):
-    def __init__(self, embed_dim):
-        super(ConvBlock, self).__init__()
+    def __init__(self, embed_dim, **kwargs):
+        super(ConvBlock, self).__init__(**kwargs)
         self.embed_dim = embed_dim
         self.const = None
         self.conv000 = layers.Conv1D(embed_dim, 3, padding='same', activation=tf.nn.gelu,
@@ -284,6 +452,45 @@ class ConvBlock(layers.Layer):
         self.dw_conv = layers.Conv1D(embed_dim, 1, padding='same')
         self.activation = layers.Activation(tf.nn.gelu)
 
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "embed_dim": self.embed_dim,
+                "const": self.const,
+                "conv000": self.conv000,
+                "conv010": self.conv010,
+                "conv011": self.conv011,
+                "conv020": self.conv020,
+                "conv021": self.conv021,
+                "add": self.add,
+                "conv100": self.conv100,
+                "bn0": self.bn0,
+                "bn1": self.bn1,
+                "dw_conv": self.dw_conv,
+                "activation": self.activation,
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["embed_dim"] = keras.layers.deserialize(config["embed_dim"])
+    #     config["const"] = keras.layers.deserialize(config["const"])
+    #     config["conv000"] = keras.layers.deserialize(config["conv000"])
+    #     config["conv010"] = keras.layers.deserialize(config["conv010"])
+    #     config["conv011"] = keras.layers.deserialize(config["conv011"])
+    #     config["conv020"] = keras.layers.deserialize(config["conv020"])
+    #     config["conv021"] = keras.layers.deserialize(config["conv021"])
+    #     config["add"] = keras.layers.deserialize(config["add"])
+    #     config["conv100"] = keras.layers.deserialize(config["conv100"])
+    #     config["bn0"] = keras.layers.deserialize(config["bn0"])
+    #     config["bn1"] = keras.layers.deserialize(config["bn1"])
+    #     config["dw_conv"] = keras.layers.deserialize(config["dw_conv"])
+    #     config["activation"] = keras.layers.deserialize(config["activation"])
+    #     return cls(**config)
+
     def call(self, inputs, training):
         # Could add skip connection here?
         xa = self.conv000(inputs)
@@ -303,6 +510,7 @@ class ConvBlock(layers.Layer):
         return xa
 
 
+@keras.saving.register_keras_serializable(package="MyLayers", name="chunk_module")
 def chunk_module(input_len, embed_dim, num_heads, attention_range,
                  start_offset=0, end_offset=0):
     projection_dim = embed_dim
@@ -327,6 +535,7 @@ def chunk_module(input_len, embed_dim, num_heads, attention_range,
 
 
 ## STI Model
+@keras.saving.register_keras_serializable(package="MyModels")
 class SplitTransformer(keras.Model):
     def __init__(self,
                  embed_dim,
@@ -338,8 +547,9 @@ class SplitTransformer(keras.Model):
                  dropout_rate=0.25,
                  attn_block_repeats=1,
                  attention_range=100,
-                 in_channel=2):
-        super(SplitTransformer, self).__init__()
+                 in_channel=2,
+                 **kwargs):
+        super(SplitTransformer, self).__init__(**kwargs)
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.chunk_size = chunk_size
@@ -367,12 +577,69 @@ class SplitTransformer(keras.Model):
                                       ) for i, cs in enumerate(self.chunk_starts)]
 
         self.concat_layer = layers.Concatenate(axis=-2)
-        self.embedding = GenoEmbeddings(self.embed_dim)
-        self.slice_layer = layers.Lambda(lambda x: x[:, self.offset_before:self.seq_len - self.offset_after],
-                                         name="output_slicer")
+        self.embedding = CatEmbeddings(self.embed_dim)
+        # self.slice_layer = layers.Lambda(lambda x: x[:, self.offset_before:self.seq_len - self.offset_after],
+        #                                  name="output_slicer")
         self.after_concat_layer = layers.Conv1D(self.embed_dim // 2, 5, padding='same', activation=tf.nn.gelu)
         self.last_conv = layers.Conv1D(self.in_channel - 1, 5, padding='same', activation=tf.nn.softmax)
         super(SplitTransformer, self).build(input_shape)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "embed_dim": self.embed_dim,
+                "num_heads": self.num_heads,
+                "offset_before": self.offset_before,
+                "offset_after": self.offset_after,
+                "chunk_size": self.chunk_size,
+                "activation": self.activation,
+                "dropout_rate": self.dropout_rate,
+                "attn_block_repeats": self.attn_block_repeats,
+                "attention_range": self.attention_range,
+                "in_channel": self.in_channel,
+                "seq_len": self.seq_len,
+
+                "chunk_starts": self.chunk_starts,
+                "chunk_ends": self.chunk_ends,
+                "mask_starts": self.mask_starts,
+                "mask_ends": self.mask_ends,
+                "chunkers": self.chunkers,
+                "concat_layer": self.concat_layer,
+                "embedding": self.embedding,
+                # "slice_layer": self.slice_layer,
+                "after_concat_layer": self.after_concat_layer,
+                "last_conv": self.last_conv,
+            }
+        )
+        return config
+
+    # @classmethod
+    # def from_config(cls, config):
+    #     # Note that you can also use `keras.saving.deserialize_keras_object` here
+    #     config["embed_dim"] = keras.layers.deserialize(config["embed_dim"])
+    #     config["num_heads"] = keras.layers.deserialize(config["num_heads"])
+    #     config["offset_before"] = keras.layers.deserialize(config["offset_before"])
+    #     config["offset_after"] = keras.layers.deserialize(config["offset_after"])
+    #     config["chunk_size"] = keras.layers.deserialize(config["chunk_size"])
+    #     config["activation"] = keras.layers.deserialize(config["activation"])
+    #     config["attn_block_repeats"] = keras.layers.deserialize(config["attn_block_repeats"])
+    #     config["dropout_rate"] = keras.layers.deserialize(config["dropout_rate"])
+    #     config["attention_range"] = keras.layers.deserialize(config["attention_range"])
+    #     config["in_channel"] = keras.layers.deserialize(config["in_channel"])
+    #     config["seq_len"] = keras.layers.deserialize(config["seq_len"])
+
+    #     config["chunk_starts"] = keras.layers.deserialize(config["chunk_starts"])
+    #     config["chunk_ends"] = keras.layers.deserialize(config["chunk_ends"])
+    #     config["mask_starts"] = keras.layers.deserialize(config["mask_starts"])
+    #     config["mask_ends"] = keras.layers.deserialize(config["mask_ends"])
+    #     config["chunkers"] = keras.layers.deserialize(config["chunkers"])
+    #     config["concat_layer"] = keras.layers.deserialize(config["concat_layer"])
+    #     config["embedding"] = keras.layers.deserialize(config["embedding"])
+    #     # config["slice_layer"] = keras.layers.deserialize(config["slice_layer"])
+    #     config["after_concat_layer"] = keras.layers.deserialize(config["after_concat_layer"])
+    #     config["last_conv"] = keras.layers.deserialize(config["last_conv"])
+    #     return cls(**config)
 
     def call(self, inputs):
         x = self.embedding(inputs)
@@ -382,8 +649,14 @@ class SplitTransformer(keras.Model):
         x = self.concat_layer(chunks)
         x = self.after_concat_layer(x)
         x = self.last_conv(x)
-        x = self.slice_layer(x)
+        # x = self.slice_layer(x)
+        x = x[:, self.offset_before:self.seq_len - self.offset_after]
         return x
+
+
+custom_objects = {"SplitTransformer": SplitTransformer, "chunk_module": chunk_module, "ConvBlock": ConvBlock,
+                  "CrossAttnChunk": CrossAttnChunk, "SelfAttnChunk": SelfAttnChunk, "GenoEmbeddings": CatEmbeddings,
+                  "MaskedTransformerBlock": MaskedTransformerBlock, "CrossAttentionLayer": CrossAttentionLayer, }
 
 
 ## Loss
@@ -438,7 +711,7 @@ def create_callbacks(metric="val_loss", save_path="."):
         monitor=metric,
         verbose=0,
         save_best_only=True,
-        save_weights_only=True,
+        save_weights_only=False,
         mode='auto',
         save_freq='epoch',
     )
@@ -446,7 +719,7 @@ def create_callbacks(metric="val_loss", save_path="."):
     callbacks = [
         reducelr,
         earlystop,
-        checkpoint
+        # checkpoint
     ]
 
     return callbacks
@@ -520,8 +793,8 @@ class DataReader:
         if data_header is None:
             raise IOError("The file only contains comments!")
         df = dt.fread(file=file_path,
-                   sep=separator, header=True, skip_to_line=line_counter+1)
-        df = df.to_pandas().astype('category')
+                      sep=separator, header=True, skip_to_line=line_counter + 1)
+        df = df.to_pandas()#.astype('category')
         if first_column_is_index:
             df.set_index(df.columns[0], inplace=True)
         return df
@@ -531,7 +804,7 @@ class DataReader:
         separator = "\t"
         found_file_format = None
 
-        if file_format not in ["infer"]+list(SUPPORTED_FILE_FORMATS):
+        if file_format not in ["infer"] + list(SUPPORTED_FILE_FORMATS):
             raise ValueError("File extension must be one of {'vcf', 'csv', 'tsv', 'infer'}.")
         if file_format == 'infer':
             file_name_tokenized = file_path.split(".")
@@ -697,7 +970,8 @@ class DataReader:
             self.target_set[self.reference_panel.columns[:9]] = self.reference_panel[self.reference_panel.columns[:9]]
         self.target_set = self.target_set.astype('str')
         self.target_set.fillna("." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
-        self.target_set = self.target_set.astype('category')
+        self.target_set.replace("nan", "." if self.target_is_hap else ".|." if self.is_phased else "./.", inplace=True)
+        # self.target_set = self.target_set.astype('category') # Was causing random bugs!
         pprint("Done!")
 
     def __map_hap_2_ind_parent_1(self, x) -> int:
@@ -759,7 +1033,7 @@ class DataReader:
             raise ValueError("Number of haploids should be even.")
 
         n_samples = n_haploids // 2
-        genotypes = np.zeros((n_samples, n_variants), dtype=object)
+        genotypes = np.empty((n_samples, n_variants), dtype=object)
 
         for i in tqdm(range(n_samples)):
             # haploid_1 = allele_probs_normalized[2 * i]
@@ -831,13 +1105,16 @@ class DataReader:
 
     def write_ligated_results_to_file(self, df: pd.DataFrame, file_name: str, compress=True) -> str:
         to_write_format = self.ref_file_extension
-        with gzip.open(f"{file_name}.{to_write_format}.gz", 'wt') if compress else open(f"{file_name}.{to_write_format}", 'wt') as f_out:
+        with gzip.open(f"{file_name}.{to_write_format}.gz", 'wt') if compress else open(
+                f"{file_name}.{to_write_format}", 'wt') as f_out:
             # write info
             if self.ref_file_extension == "vcf":
                 f_out.write("\n".join(self.__get_headers_for_output(contain_probs=False)) + "\n")
             else:  # Not the best idea?
                 f_out.write("\n".join(self.ref_n_header_lines))
-        dt.Frame(df).to_csv(f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}", sep=self.ref_separator, append=True)
+        # pprint(f"Data to be saved shape: {df.shape}")
+        df.to_csv(f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}",
+                  sep=self.ref_separator, mode='a', index=False)
         return f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}"
 
 
@@ -856,7 +1133,7 @@ def onehot_encode(x_sample, depth):
     return tf.one_hot(x_sample, depth)
 
 
-def get_training_dataset(x, batch_size, depth,
+def get_training_dataset(x, batch_size, depth, strategy,
                          offset_before=0, offset_after=0,
                          training=True, masking_rate=0.8):
     AUTO = tf.data.AUTOTUNE
@@ -898,10 +1175,10 @@ def get_test_dataset(x, batch_size, depth):
     dataset = dataset.batch(batch_size, drop_remainder=False, num_parallel_calls=AUTO)
 
     # This part is for multi-gpu servers
-    options = tf.data.Options()
-    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
-    dataset = dataset.with_options(options)
-    dataset = strategy.experimental_distribute_dataset(dataset)
+    # options = tf.data.Options()
+    # options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.FILE
+    # dataset = dataset.with_options(options)
+    # dataset = strategy.experimental_distribute_dataset(dataset)
 
     return dataset
 
@@ -910,8 +1187,8 @@ def create_directories(save_dir,
                        models_dir="models",
                        outputs="out") -> None:
     for dd in [save_dir,
-                f"{save_dir}/{models_dir}",
-                f"{save_dir}/{outputs}"]:
+               f"{save_dir}/{models_dir}",
+               f"{save_dir}/{outputs}"]:
         if not os.path.exists(dd):
             os.makedirs(dd)
     pass
@@ -919,12 +1196,13 @@ def create_directories(save_dir,
 
 def clear_dir(path) -> None:
     # credit: https://stackoverflow.com/a/72982576/4260559
-    for entry in os.scandir(path):
-        if entry.is_dir():
-            clear_dir(entry)
-        else:
-            os.remove(entry)
-    os.rmdir(path)  # if you just want to delete the dir content but not the dir itself, remove this line
+    if os.path.exists(path):
+        for entry in os.scandir(path):
+            if entry.is_dir():
+                clear_dir(entry)
+            else:
+                os.remove(entry)
+        os.rmdir(path)  # if you just want to delete the dir content but not the dir itself, remove this line
 
 
 def load_chunk_info(save_dir, break_points):
@@ -945,11 +1223,14 @@ def save_chunk_status(save_dir, chunk_info) -> None:
 
 def train_the_model(args) -> None:
     if args.val_frac <= 0 or args.val_frac >= 1:
-        raise args.ArgumentError(message="Validation fraction should be a positive value in range of (0, 1)")
+        raise args.ArgumentError(None, message="Validation fraction should be a positive value in range of (0, 1)")
     if args.restart_training:
         clear_dir(args.save_dir)
 
     NUM_EPOCHS = args.epochs
+    strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.ReductionToOneDevice())
+    N_REPLICAS = strategy.num_replicas_in_sync
+    pprint(f"Num gpus to be used: {N_REPLICAS}")
     BATCH_SIZE = args.batch_size_per_gpu * N_REPLICAS
 
     create_directories(args.save_dir)
@@ -986,17 +1267,19 @@ def train_the_model(args) -> None:
         pprint(f"Data shape: {ref_set.shape}")
         train_dataset = get_training_dataset(ref_set[x_train_indices], BATCH_SIZE,
                                              depth=dr.SEQ_DEPTH,
+                                             strategy=strategy,
                                              offset_before=offset_before,
                                              offset_after=offset_after,
                                              masking_rate=args.mr)
         valid_dataset = get_training_dataset(ref_set[x_valid_indices], BATCH_SIZE,
                                              depth=dr.SEQ_DEPTH,
+                                             strategy=strategy,
                                              offset_before=offset_before,
                                              offset_after=offset_after, training=False,
                                              masking_rate=args.mr)
         del ref_set
         K.clear_session()
-        callbacks = create_callbacks(save_path=f"{args.save_dir}/models/w_{w}")
+        callbacks = create_callbacks(save_path=f"{args.save_dir}/models/w_{w}/cp.ckpt")
         model_args = {
             "embedding_dim": args.embed_dim,
             "num_heads": args.na_heads,
@@ -1014,6 +1297,8 @@ def train_the_model(args) -> None:
                                 validation_data=valid_dataset,
                                 validation_steps=validation_steps,
                                 callbacks=callbacks, verbose=1)
+            model.save(f"{args.save_dir}/models/w_{w}.ckpt")
+            # tf.saved_model.save(model, f"{args.save_dir}/models/w_{w}.keras")
             chunks_done[w] = True
             save_chunk_status(args.save_dir, chunks_done)
     pass
@@ -1021,8 +1306,18 @@ def train_the_model(args) -> None:
 
 def impute_the_target(args):
     if args.target is None:
-        raise argparse.ArgumentError(
-            message="Target file missing for imputation. use --target to specify a target file.")
+        raise argparse.ArgumentError(None,
+                                     message="Target file missing for imputation. use --target to specify a target file.")
+
+    if os.path.exists(f"{args.save_dir}/commandline_args.json"):
+        with open(f"{args.save_dir}/commandline_args.json", 'r') as f:
+            training_args = json.load(f)
+        # Ensure that sites-per-model is matched to the one used for training
+        args.sites_per_model = training_args["sites_per_model"]
+        args.batch_size_per_gpu = training_args["batch_size_per_gpu"]
+        args.tihp = training_args["tihp"]
+        args.cs = training_args["cs"]
+        args.co = training_args["co"]
 
     dr = DataReader()
     dr.assign_training_set(file_path=args.ref,
@@ -1039,45 +1334,28 @@ def impute_the_target(args):
                        first_column_is_index=args.target_fcai,
                        comments=args.target_comment)
 
-    with open(f"{args.save_dir}/commandline_args.json", 'r') as f:
-        training_args = json.load(f)
-    BATCH_SIZE = args.batch_size_per_gpu * N_REPLICAS
-    # Ensure that sites-per-model is matched to the one used for training
-    args.sites_per_model = training_args["sites_per_model"]
-
+    BATCH_SIZE = args.batch_size_per_gpu  # * N_REPLICAS
     all_preds = []
     break_points = list(np.arange(0, dr.VARIANT_COUNT, args.sites_per_model)) + [dr.VARIANT_COUNT]
     for w in range(len(break_points) - 1):
         pprint(f"Imputing chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
-        offset_before = break_points[w] - final_start_pos
-        offset_after = final_end_pos - break_points[w + 1]
 
         K.clear_session()
-        callbacks = create_callbacks(save_path=f"{args.save_dir}/models/w_{w}")
-        model_args = {
-            "embedding_dim": args.embed_dim,
-            "num_heads": args.na_heads,
-            "chunk_size": args.cs,
-            "chunk_overlap": args.co,
-            "in_channel": dr.SEQ_DEPTH,
-            "offset_before": offset_before,
-            "offset_after": offset_after,
-            "lr": args.lr
-        }
-        with strategy.scope():
-            model = create_model(model_args)
-            latest = tf.train.latest_checkpoint(f"{args.save_dir}/models/w_{w}")
-            model.load_weights(latest)
-            test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
-            test_dataset = get_test_dataset(test_dataset_np, BATCH_SIZE, depth=dr.SEQ_DEPTH)
-            predict_onehot = model.predict(test_dataset, verbose=1)
-            all_preds.append(predict_onehot.astype(np.float32))
+        model = tf.keras.models.load_model(
+            f"{args.save_dir}/models/w_{w}.ckpt",
+            custom_objects=custom_objects,
+            compile=False
+        )
+        test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
+        test_dataset = get_test_dataset(test_dataset_np, BATCH_SIZE, depth=dr.SEQ_DEPTH)
+        predict_onehot = model.predict(test_dataset, verbose=1)
+        all_preds.append(predict_onehot.astype(np.float32))
     all_preds = np.hstack(all_preds)
     destination_file_path = dr.write_ligated_results_to_file(dr.preds_to_genotypes(all_preds),
-                                     f"{args.save_dir}/out/ligated_results",
-                                     compress=args.compress_results)
+                                                             f"{args.save_dir}/out/ligated_results",
+                                                             compress=args.compress_results)
     pprint(f"Done! Please find the file at {destination_file_path}")
 
 
@@ -1107,19 +1385,22 @@ def main():
     first_column_is_index=True,
     comments="##"
     '''
-    parser = argparse.ArgumentParser(description='ShiLab\'s Imputation model (STI v1.1).')
+    deciding_args_parser = argparse.ArgumentParser(description='ShiLab\'s Imputation model (STI v1.1).', add_help=False)
 
     ## Function mode
-    parser.add_argument('--mode', type=str, help='Operation mode: impute | train (default=train)',
-                        choices=['impute', 'train'], default='train')
-    parser.add_argument('--restart-training', type=str, required=False,
-                        help='Whether to clean previously saved models in target directory and restart the training',
-                        choices=['false', 'true', '0', '1'], default='0')
+    deciding_args_parser.add_argument('--mode', type=str, help='Operation mode: impute | train (default=train)',
+                                      choices=['impute', 'train'], default='train')
+    deciding_args_parser.add_argument('--restart-training', type=str, required=False,
+                                      help='Whether to clean previously saved models in target directory and restart the training',
+                                      choices=['false', 'true', '0', '1'], default='0')
+    deciding_args, _ = deciding_args_parser.parse_known_args()
+    parser = argparse.ArgumentParser(
+        description="", parents=[deciding_args_parser])
     ## Input args
     parser.add_argument('--ref', type=str, required=True, help='Reference file path.')
     parser.add_argument('--target', type=str, required=False,
                         help='Target file path. Must be provided in "impute" mode.')
-    parser.add_argument('--tihp', type=str, required=True,
+    parser.add_argument('--tihp', type=str, required=deciding_args.mode == 'train',
                         help='Whether the target is going to be haps or phased.',
                         choices=['false', 'true', '0', '1'])
     parser.add_argument('--ref-comment', type=str, required=False,
@@ -1176,7 +1457,7 @@ def main():
     parser.add_argument('--cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)',
                         default=2000)
     parser.add_argument('--sites-per-model', type=int, required=False,
-                        help='Number of SNPs/SVs used per model(default 30000)', default=30000)
+                        help='Number of SNPs/SVs used per model(default 16000)', default=16000)
 
     ## Model (hyper-)params
     parser.add_argument('--mr', type=float, required=False, help='Masking rate(default 0.8)', default=0.8)
@@ -1192,12 +1473,12 @@ def main():
     parser.add_argument('--embed-dim', type=int, required=False, help='Embedding dimension size (default 128)',
                         default=128)
     parser.add_argument('--lr', type=float, required=False, help='Learning Rate (default 0.001)', default=0.001)
-    parser.add_argument('--batch-size-per-gpu', type=int, required=False, help='Batch size per gpu(default 4)',
-                        default=4)
+    parser.add_argument('--batch-size-per-gpu', type=int, required=False, help='Batch size per gpu(default 2)',
+                        default=2)
 
     args = parser.parse_args()
     args.restart_training = str_to_bool(args.restart_training)
-    args.tihp = str_to_bool(args.tihp)
+    args.tihp = str_to_bool(args.tihp) if args.tihp else args.tihp
     args.ref_vac = str_to_bool(args.ref_vac)
     args.target_vac = str_to_bool(args.target_vac)
     args.ref_fcai = str_to_bool(args.ref_fcai)
