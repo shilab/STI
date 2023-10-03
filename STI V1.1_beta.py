@@ -910,9 +910,9 @@ class DataReader:
             self.map_preds_2_allele = np.vectorize(lambda x: self.r_hap_map[x])
         else:
             unphased_missing_genotype = "./."
-            self.replacement_dict = {g: i for i, g in enumerate(self.genotype_vals)}
+            self.replacement_dict = {g: i for i, g in enumerate(list(sorted(self.genotype_vals)))}
             self.replacement_dict[unphased_missing_genotype] = self.MISSING_VALUE
-            self.reverse_replacement_dict = {v: k for k, v in enumerate(self.replacement_dict)}
+            self.reverse_replacement_dict = {v: k for k, v in self.replacement_dict.items()}
 
         self.SEQ_DEPTH = self.allele_count + 1 if self.is_phased else len(self.genotype_vals)
         pprint("Done!")
