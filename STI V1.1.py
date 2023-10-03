@@ -46,11 +46,11 @@ logging.basicConfig(level=logging.WARNING)
 pprint("Tensorflow version " + tf.__version__)
 
 SUPPORTED_FILE_FORMATS = {"vcf", "csv", "tsv"}
-keras.saving.get_custom_objects().clear()
+# keras.saving.get_custom_objects().clear()
 
 
 ## Custom Layers
-@keras.saving.register_keras_serializable(package="MyLayers")
+# @keras.saving.register_keras_serializable(package="MyLayers")
 class CrossAttentionLayer(layers.Layer):
     def __init__(self, local_dim, global_dim,
                  start_offset=0, end_offset=0,
@@ -146,7 +146,7 @@ class CrossAttentionLayer(layers.Layer):
         return outputs
 
 
-@keras.saving.register_keras_serializable(package="MyLayers")
+# @keras.saving.register_keras_serializable(package="MyLayers")
 class MaskedTransformerBlock(layers.Layer):
     def __init__(self, embed_dim, num_heads, ff_dim, attention_range, start_offset=0, end_offset=0,
                  attn_block_repeats=1, activation=tf.nn.gelu, dropout_rate=0.1, use_ffn=True, **kwargs):
@@ -235,7 +235,7 @@ class MaskedTransformerBlock(layers.Layer):
         return x
 
 
-@keras.saving.register_keras_serializable(package="MyLayers")
+# @keras.saving.register_keras_serializable(package="MyLayers")
 class CatEmbeddings(layers.Layer):
     def __init__(self, embedding_dim,
                  embeddings_initializer='glorot_uniform',
@@ -306,7 +306,7 @@ class CatEmbeddings(layers.Layer):
         return self.immediate_result + self.position_embedding(self.positions)
 
 
-@keras.saving.register_keras_serializable(package="MyLayers")
+# @keras.saving.register_keras_serializable(package="MyLayers")
 class SelfAttnChunk(layers.Layer):
     def __init__(self, embed_dim, num_heads, ff_dim, attention_range,
                  start_offset=0, end_offset=0,
@@ -371,7 +371,7 @@ class SelfAttnChunk(layers.Layer):
         return x
 
 
-@keras.saving.register_keras_serializable(package="MyLayers")
+# @keras.saving.register_keras_serializable(package="MyLayers")
 class CrossAttnChunk(layers.Layer):
     def __init__(self, start_offset=0, end_offset=0, n_heads=8, **kwargs):
         super(CrossAttnChunk, self).__init__(**kwargs)
@@ -420,7 +420,7 @@ class CrossAttnChunk(layers.Layer):
         return x
 
 
-@keras.saving.register_keras_serializable(package="MyLayers")
+# @keras.saving.register_keras_serializable(package="MyLayers")
 class ConvBlock(layers.Layer):
     def __init__(self, embed_dim, **kwargs):
         super(ConvBlock, self).__init__(**kwargs)
@@ -510,7 +510,7 @@ class ConvBlock(layers.Layer):
         return xa
 
 
-@keras.saving.register_keras_serializable(package="MyLayers", name="chunk_module")
+# @keras.saving.register_keras_serializable(package="MyLayers", name="chunk_module")
 def chunk_module(input_len, embed_dim, num_heads, attention_range,
                  start_offset=0, end_offset=0):
     projection_dim = embed_dim
@@ -535,7 +535,7 @@ def chunk_module(input_len, embed_dim, num_heads, attention_range,
 
 
 ## STI Model
-@keras.saving.register_keras_serializable(package="MyModels")
+# @keras.saving.register_keras_serializable(package="MyModels")
 class SplitTransformer(keras.Model):
     def __init__(self,
                  embed_dim,
@@ -1342,12 +1342,12 @@ def impute_the_target(args):
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
 
-        K.clear_session()
-        model = tf.keras.models.load_model(
-            f"{args.save_dir}/models/w_{w}.ckpt",
-            custom_objects=custom_objects,
-            compile=False
-        )
+        # K.clear_session()
+        # model = tf.keras.models.load_model(
+        #     f"{args.save_dir}/models/w_{w}.ckpt",
+        #     custom_objects=custom_objects,
+        #     compile=False
+        # )
         test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
         test_dataset = get_test_dataset(test_dataset_np, BATCH_SIZE, depth=dr.SEQ_DEPTH)
         predict_onehot = model.predict(test_dataset, verbose=1)
