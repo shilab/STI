@@ -904,7 +904,7 @@ class DataReader:
         self.MISSING_VALUE = self.allele_count if self.is_phased else len(self.genotype_vals)
 
         if self.is_phased:
-            self.hap_map = {str(v): i for i, v in enumerate(self.alleles)}
+            self.hap_map = {str(v): i for i, v in enumerate(list(sorted(self.alleles)))}
             self.hap_map.update({".": self.MISSING_VALUE})
             self.r_hap_map = {i: k for k, i in self.hap_map.items()}
             self.map_preds_2_allele = np.vectorize(lambda x: self.r_hap_map[x])
@@ -1044,7 +1044,7 @@ class DataReader:
                 # unphased_probs = np.array([phased_probs[0], sum(phased_probs[1:3]), phased_probs[-1]])
                 # unphased_probs_str = ",".join([f"{v:.6f}" for v in unphased_probs])
                 # alt_dosage = np.dot(unphased_probs, [0, 1, 2])
-                variant_genotypes = [str(v) for v in np.argmax(allele_probs_normalized[i * 2:(i + 1) * 2, j], axis=-1)]
+                variant_genotypes = [self.r_hap_map[v] for v in np.argmax(allele_probs_normalized[i * 2:(i + 1) * 2, j], axis=-1)]
                 genotypes[i, j] = '|'.join(variant_genotypes)  # + f":{alt_dosage:.3f}:{unphased_probs_str}"
 
         return genotypes
@@ -1114,7 +1114,7 @@ class DataReader:
                 f_out.write("\n".join(self.ref_n_header_lines))
         # pprint(f"Data to be saved shape: {df.shape}")
         df.to_csv(f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}",
-                  sep=self.ref_separator, mode='a')
+                  sep=self.ref_separator, mode='a', index=False)
         return f"{file_name}.{to_write_format}.gz" if compress else f"{file_name}.{to_write_format}"
 
 
@@ -1341,6 +1341,7 @@ def impute_the_target(args):
         pprint(f"Imputing chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
+        test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
 
         K.clear_session()
         model = tf.keras.models.load_model(
@@ -1348,7 +1349,7 @@ def impute_the_target(args):
             custom_objects=custom_objects,
             compile=False
         )
-        test_dataset_np = dr.get_target_set(final_start_pos, final_end_pos).astype(np.int32)
+
         test_dataset = get_test_dataset(test_dataset_np, BATCH_SIZE, depth=dr.SEQ_DEPTH)
         predict_onehot = model.predict(test_dataset, verbose=1)
         all_preds.append(predict_onehot.astype(np.float32))
