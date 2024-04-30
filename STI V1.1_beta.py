@@ -1,6 +1,6 @@
 import os, sys, shutil, gzip, argparse, math
 import logging
-from icecream import ic
+# from icecream import ic
 from tqdm import tqdm
 import numpy as np
 from typing import Union
@@ -42,7 +42,7 @@ def pprint(text):
     print(f"{bcolors.OKGREEN}{text}{bcolors.ENDC}")
 
 
-logging.basicConfig(level=logging.WARNING)
+# logging.basicConfig(level=logging.WARNING)
 pprint("Tensorflow version " + tf.__version__)
 
 SUPPORTED_FILE_FORMATS = {"vcf", "csv", "tsv"}
@@ -280,7 +280,7 @@ class CatEmbeddings(layers.Layer):
                 "num_of_allels": self.num_of_allels,
                 "n_snps": self.n_snps,
 
-                # "embedding": self.embedding,
+                "embedding": self.embedding.numpy(),
                 "positions": self.positions.numpy(),
             }
         )
@@ -886,7 +886,8 @@ class DataReader:
                 allele_set.update([v1, v2])
             return np.array(list(allele_set))
 
-        genotype_vals = np.unique(self.reference_panel.iloc[:, self.ref_sample_value_index - 1:].values)
+        genotype_vals = pd.unique(self.reference_panel.iloc[:, self.ref_sample_value_index - 1:].values.ravel('K'))
+        # print(f"Unique genotypes: {genotype_vals}")
         if self.ref_is_phased and not target_is_gonna_be_phased_or_haps:  # In this case ref is not haps due to the above checks
             # Convert phased values in the reference to unphased values
             phased_to_unphased_dict = {}
@@ -1137,7 +1138,7 @@ def get_training_dataset(x, batch_size, depth, strategy,
                          offset_before=0, offset_after=0,
                          training=True, masking_rate=0.8):
     AUTO = tf.data.AUTOTUNE
-
+    print(f"target_shape: {x[0:1, offset_before:x.shape[1] - offset_after].shape}")
     dataset = tf.data.Dataset.from_tensor_slices((x, x[:, offset_before:x.shape[1] - offset_after]))
     # # Add Attention Mask
 
@@ -1228,6 +1229,15 @@ def train_the_model(args) -> None:
         clear_dir(args.save_dir)
 
     NUM_EPOCHS = args.epochs
+    # slurmClusterResolver = tf.distribute.cluster_resolver.SlurmClusterResolver(jobs=None,
+    # port_base=8888,
+    # gpus_per_node=2,
+    # gpus_per_task=1,
+    # tasks_per_node=None,
+    # auto_set_gpu=True,
+    # rpc_layer='grpc')
+
+    # strategy = tf.distribute.MultiWorkerMirroredStrategy(slurmClusterResolver)
     strategy = tf.distribute.MirroredStrategy(cross_device_ops=tf.distribute.ReductionToOneDevice())
     N_REPLICAS = strategy.num_replicas_in_sync
     pprint(f"Num gpus to be used: {N_REPLICAS}")
@@ -1258,6 +1268,10 @@ def train_the_model(args) -> None:
         if chunks_done[w]:
             pprint(f"Skipping chunk {w + 1}/{len(break_points) - 1} due to previous training.")
             continue
+        if args.which_chunk != -1 and w+1 != args.which_chunk:
+            pprint(f"Skipping chunk {w + 1}/{len(break_points) - 1} due to your request using --which-chunk.")
+            continue
+
         pprint(f"Training on chunk {w + 1}/{len(break_points) - 1}")
         final_start_pos = max(0, break_points[w] - 2 * args.co)
         final_end_pos = min(dr.VARIANT_COUNT, break_points[w + 1] + 2 * args.co)
@@ -1296,7 +1310,7 @@ def train_the_model(args) -> None:
                                 epochs=NUM_EPOCHS,
                                 validation_data=valid_dataset,
                                 validation_steps=validation_steps,
-                                callbacks=callbacks, verbose=1)
+                                callbacks=callbacks, verbose=2)
             model.save(f"{args.save_dir}/models/w_{w}.ckpt")
             # tf.saved_model.save(model, f"{args.save_dir}/models/w_{w}.keras")
             chunks_done[w] = True
@@ -1404,6 +1418,8 @@ def main():
     parser.add_argument('--tihp', type=str, required=deciding_args.mode == 'train',
                         help='Whether the target is going to be haps or phased.',
                         choices=['false', 'true', '0', '1'])
+    parser.add_argument('--which-chunk', type=int, required=False,
+                        help='Which chunk to train on', default=-1)
     parser.add_argument('--ref-comment', type=str, required=False,
                         help='The character(s) used to indicate comment lines in the reference file (default="\\t").',
                         default="##")
@@ -1453,10 +1469,10 @@ def main():
                         default='1',
                         choices=['false', 'true', '0', '1'])
     ## Chunking args
-    parser.add_argument('--co', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 100)',
-                        default=100)
-    parser.add_argument('--cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2000)',
-                        default=2000)
+    parser.add_argument('--co', type=int, required=False, help='Chunk overlap in terms of SNPs/SVs(default 128)',
+                        default=128)
+    parser.add_argument('--cs', type=int, required=False, help='Chunk size in terms of SNPs/SVs(default 2048)',
+                        default=2048)
     parser.add_argument('--sites-per-model', type=int, required=False,
                         help='Number of SNPs/SVs used per model(default 16000)', default=16000)
 
